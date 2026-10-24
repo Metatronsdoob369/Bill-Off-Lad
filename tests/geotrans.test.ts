@@ -6,6 +6,7 @@ import {
   computePlanarDockOffsetMeters,
   computeEldBreadcrumbPlot,
   getSpatialFacilityIntelligence,
+  evaluateDockProximity,
 } from '../src/geotrans';
 
 describe('GeoTrans Coordinate Engine (100% Local Math / Zero Map APIs)', () => {
@@ -111,4 +112,21 @@ describe('GeoTrans Coordinate Engine (100% Local Math / Zero Map APIs)', () => {
     expect(intel.claimsApprovedPct).toBeGreaterThan(80);
     expect(intel.preFlightNegotiationAdvice).toBeTruthy();
   });
+
+  it('evaluates 53-ft trailer lengths and dispatcher verdicts via evaluateDockProximity', () => {
+    const bumper = evaluateDockProximity(41.525, -88.0817, 41.525126, -88.0817);
+    expect(bumper.feetFromDock).toBe(46);
+    expect(bumper.trailerLengths53Ft).toBe(0.7);
+    expect(bumper.boundaryStatus).toBe('STATUS: DOCK APRON VERIFIED (< 50m)');
+    expect(bumper.dispatcherVerdict).toBe('AT THE DOCK BUMPER — PAY DETENTION');
+
+    const bullpen = evaluateDockProximity(41.525, -88.0817, 41.525658, -88.0817);
+    expect(bullpen.feetFromDock).toBe(240);
+    expect(bullpen.boundaryStatus).toBe('STATUS: FACILITY STAGING AREA (< 150m)');
+
+    const truckStop = evaluateDockProximity(41.525, -88.0817, 41.529335, -88.0817);
+    expect(truckStop.feetFromDock).toBeGreaterThan(1500);
+    expect(truckStop.boundaryStatus).toBe('STATUS: OFF-SITE / IN-TRANSIT (> 150m)');
+  });
 });
+

@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import './styles.css';
 import {
   submitFleetLead,
@@ -6,298 +6,19 @@ import {
   PricingTierName,
   LeadRecord,
 } from './firebase';
+import { evaluateDockProximity, DockProximityResult } from './geotrans';
 import {
-  computePlanarDockOffsetMeters,
-  computeEldBreadcrumbPlot,
-  getSpatialFacilityIntelligence,
-  evaluateBoundaryEnclosure,
-} from './geotrans';
-import {
-  generateCarrierPdfSuite,
-  PdfFormTemplateType,
-  CustomTemplateMode,
-} from './pdfSuite';
+  DispatchWorkbench,
+  WorkbenchTabId,
+  BENCHMARK_LANES,
+  BrokerFitBenchmark,
+  YARD_SCENARIOS,
+  JOLIET_DOCK,
+  BillOffLadingLogo,
+  computeClampedBrokerFitScore,
+} from './Workbench';
 
-interface BrokerFitBenchmark {
-  id: string;
-  queryMatch: string;
-  lane: string;
-  facilityClusterId: string;
-  fridayForecast: string;
-  brokerProfile: string;
-  bolVerifiedDwell: string;
-  avgDwellMins: number;
-  rateConTerms: string;
-  detentionRateDollars: number;
-  noticeWindowHrs: number;
-  detentionPayoutRate: string;
-  payoutRatePct: number;
-  disputedPct: number;
-  verdict: string;
-}
-
-/**
- * Deterministic Clamped True-Yield & Broker Fit Scoring Formula (DEC-11)
- * Normalizes all 4 inputs to [0, 1] before computing the 0..100 composite score.
- */
-export function computeClampedBrokerFitScore(params: {
-  payoutRatePct: number;
-  avgDwellMins: number;
-  detentionRateDollars: number;
-  noticeWindowHrs: number;
-}): number {
-  const payoutNorm = Math.max(0, Math.min(1, params.payoutRatePct / 100));
-  const dwellNorm = Math.max(0, Math.min(1, 1 - params.avgDwellMins / 360));
-  const rateNorm = Math.max(0, Math.min(1, params.detentionRateDollars / 100));
-  const noticeNorm = Math.max(0, Math.min(1, params.noticeWindowHrs / 48));
-  return Math.round(
-    (0.4 * payoutNorm + 0.3 * dwellNorm + 0.2 * rateNorm + 0.1 * noticeNorm) *
-      100
-  );
-}
-
-const BENCHMARK_LANES: BrokerFitBenchmark[] = [
-  {
-    id: 'mw-se',
-    queryMatch: 'Joliet, IL → Atlanta, GA (Dry Van)',
-    lane: 'Joliet, IL → Atlanta, GA',
-    facilityClusterId: '16T-EN-099-976',
-    fridayForecast: 'Facility 16T-EN-099-976 averages 3.4 hrs dwell on Friday afternoons',
-    brokerProfile: 'MC #481920 (Midwest Contract Group)',
-    bolVerifiedDwell: '1 hr 18 min avg (142 BOLs)',
-    avgDwellMins: 78,
-    rateConTerms: '$65/hr after 2 hrs · 24-hr notice window',
-    detentionRateDollars: 65,
-    noticeWindowHrs: 24,
-    detentionPayoutRate: '91.4% Approved / 8.6% Disputed',
-    payoutRatePct: 91.4,
-    disputedPct: 8.6,
-    verdict: 'Green-Light Fit — Fast dock turns & honors ELD timestamps',
-  },
-  {
-    id: 'mw-trap',
-    queryMatch: 'Chicago, IL → Dallas, TX (Reefer / Grocery)',
-    lane: 'Chicago, IL → Dallas, TX',
-    facilityClusterId: '14S-PB-113-147',
-    fridayForecast: 'Facility 14S-PB-113-147 averages 5.7 hrs dwell on Friday unloads',
-    brokerProfile: 'MC #774102 (National Spot Brokerage)',
-    bolVerifiedDwell: '5 hrs 42 min avg (319 BOLs)',
-    avgDwellMins: 342,
-    rateConTerms: '$35/hr after 4 hrs · 12-hr strict notice trap',
-    detentionRateDollars: 35,
-    noticeWindowHrs: 12,
-    detentionPayoutRate: '18.2% Approved / 81.8% Disputed',
-    payoutRatePct: 18.2,
-    disputedPct: 81.8,
-    verdict: 'High Detention Trap — Demand +$275 pre-flight linehaul pad',
-  },
-  {
-    id: 'se-regional',
-    queryMatch: 'Birmingham, AL → Memphis, TN (Dry Van / Flatbed)',
-    lane: 'Birmingham, AL → Memphis, TN',
-    facilityClusterId: '16S-BD-223-926',
-    fridayForecast: 'Facility 16S-BD-223-926 averages 2.8 hrs crane wait on mornings',
-    brokerProfile: 'MC #309441 (Southern Industrial Freight)',
-    bolVerifiedDwell: '1 hr 04 min avg (88 BOLs)',
-    avgDwellMins: 64,
-    rateConTerms: '$60/hr after 2 hrs · 24-hr notice window',
-    detentionRateDollars: 60,
-    noticeWindowHrs: 24,
-    detentionPayoutRate: '88.7% Approved / 11.3% Disputed',
-    payoutRatePct: 88.7,
-    disputedPct: 11.3,
-    verdict: 'Green-Light Fit — Consistent sub-90 min receiver turns',
-  },
-  {
-    id: 'pa-oh',
-    queryMatch: 'Harrisburg, PA → Columbus, OH (Dry Van)',
-    lane: 'Harrisburg, PA → Columbus, OH',
-    facilityClusterId: '17T-NE-891-412',
-    fridayForecast: 'Facility 17T-NE-891-412 averages 1.6 hrs dwell across all shifts',
-    brokerProfile: 'MC #512890 (Keystone Dedicated Logistics)',
-    bolVerifiedDwell: '1 hr 35 min avg (204 BOLs)',
-    avgDwellMins: 95,
-    rateConTerms: '$75/hr after 2 hrs · 48-hr notice window',
-    detentionRateDollars: 75,
-    noticeWindowHrs: 48,
-    detentionPayoutRate: '94.0% Approved / 6.0% Disputed',
-    payoutRatePct: 94.0,
-    disputedPct: 6.0,
-    verdict: 'Green-Light Fit — Top-decile accessorial compliance',
-  },
-];
-
-interface BolSamplePreset {
-  id: string;
-  label: string;
-  loadNumber: string;
-  rateConId: string;
-  brokerName: string;
-  brokerMc: string;
-  facilityLocation: string;
-  deliveryDate: string;
-  arrivalTime: string;
-  departureTime: string;
-  noticeSentTime: string;
-  totalDwellMins: number;
-  freeTimeMins: number;
-  detentionRateDollars: number;
-  noticeWindowHrs: number;
-  redactedPiiFields: string[];
-  needsReviewNote?: string | null;
-  dockLat: number;
-  dockLon: number;
-  eldLat: number;
-  eldLon: number;
-  rawSnippet: string;
-}
-
-const SAMPLE_BOL_PRESETS: BolSamplePreset[] = [
-  {
-    id: 'joliet-4417',
-    label: 'Load #4417 — Joliet, IL Dry Van (6h 33m dwell)',
-    loadNumber: '4417',
-    rateConId: 'RC-88214',
-    brokerName: 'Midwest Contract Group',
-    brokerMc: '481920',
-    facilityLocation: 'Joliet, IL Cold & Dry Distribution',
-    deliveryDate: '10/14',
-    arrivalTime: '08:04 CT',
-    departureTime: '14:37 CT',
-    noticeSentTime: '10:12 CT',
-    totalDwellMins: 393,
-    freeTimeMins: 120,
-    detentionRateDollars: 60,
-    noticeWindowHrs: 24,
-    redactedPiiFields: [
-      'Carrier Name: [REDACTED BEFORE INDEXING]',
-      'Carrier MC/DOT: [REDACTED]',
-      'Driver Signature: [REDACTED]',
-      'Linehaul Rate: [REDACTED]',
-    ],
-    needsReviewNote: null,
-    dockLat: 41.525,
-    dockLon: -88.0817,
-    eldLat: 41.52509,
-    eldLon: -88.08158,
-    rawSnippet:
-      'RATE CON #RC-88214 | Broker MC #481920 | Load #4417 | Receiver: Joliet, IL Distribution | Detention: $60/hr after 2 hrs free time. Carrier must notify broker within 24 hrs. Signed BOL + ELD: Arrived 08:04 CT, Notice Sent 10:12 CT, Signed 14:31 CT, Departed 14:37 CT (Total dwell 393 mins). Carrier: Prairie State Trucking MC#991024, Driver R. Miller, Linehaul $1,850.',
-  },
-  {
-    id: 'dallas-9102',
-    label: 'Load #9102 — Dallas, TX Grocery Reefer (5h 45m dwell)',
-    loadNumber: '9102',
-    rateConId: 'RC-55309',
-    brokerName: 'National Spot Brokerage',
-    brokerMc: '774102',
-    facilityLocation: 'South Dallas Cold Storage Dock B',
-    deliveryDate: '10/18',
-    arrivalTime: '05:30 CT',
-    departureTime: '11:15 CT',
-    noticeSentTime: '07:40 CT',
-    totalDwellMins: 345,
-    freeTimeMins: 120,
-    detentionRateDollars: 65,
-    noticeWindowHrs: 24,
-    redactedPiiFields: [
-      'Carrier Name: [REDACTED BEFORE INDEXING]',
-      'Carrier MC/DOT: [REDACTED]',
-      'Driver Name: [REDACTED]',
-      'Linehaul Rate: [REDACTED]',
-    ],
-    needsReviewNote: null,
-    dockLat: 32.6518,
-    dockLon: -96.7462,
-    eldLat: 32.65191,
-    eldLon: -96.74608,
-    rawSnippet:
-      'RATE CON #RC-55309 | Broker MC #774102 (National Spot Brokerage) | Load #9102 | Receiver: South Dallas Cold Storage | Detention $65/hr after 2 hrs free time, 24-hr notice required. ELD In: 05:30 CT, Broker Notified: 07:40 CT, ELD Out: 11:15 CT (345 mins total dwell).',
-  },
-  {
-    id: 'birmingham-6380',
-    label: 'Load #6380 — Birmingham Flatbed (Needs Review Flag)',
-    loadNumber: '6380',
-    rateConId: 'RC-31904',
-    brokerName: 'Southern Industrial Freight',
-    brokerMc: '309441',
-    facilityLocation: 'Memphis, TN Structural Steel Yard',
-    deliveryDate: '10/21',
-    arrivalTime: '07:15 CT',
-    departureTime: '13:55 CT',
-    noticeSentTime: '09:20 CT',
-    totalDwellMins: 400,
-    freeTimeMins: 120,
-    detentionRateDollars: 60,
-    noticeWindowHrs: 24,
-    redactedPiiFields: [
-      'Carrier Name: [REDACTED BEFORE INDEXING]',
-      'Carrier MC/DOT: [REDACTED]',
-      'Driver PIN #246810: [REDACTED]',
-      'Linehaul Rate: [REDACTED]',
-    ],
-    needsReviewNote:
-      'Handwritten receiver sign-out ("13:45?") slightly smudged on BOL — auto-reconciled with ELD geofence departure (13:55 CT).',
-    dockLat: 35.1495,
-    dockLon: -90.049,
-    eldLat: 35.14962,
-    eldLon: -90.04889,
-    rawSnippet:
-      'RATE CON #RC-31904 | Broker MC #309441 (Southern Industrial Freight) | Load #6380 | Receiver: Memphis Structural Steel Yard | Detention $60/hr after 2 hrs free time. Driver Cab-Upload: Arrived 07:15 CT, Notice Sent 09:20 CT, Handwritten BOL Out smudged (13:45?), ELD GPS Departure 13:55 CT (400 mins total dwell).',
-  },
-];
-
-function BillOffLadingLogo({ size = 24 }: { size?: number }) {
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      aria-hidden="true"
-    >
-      {/* Outer Dock Door Frame (#241F18) */}
-      <path
-        d="M3 21V3H21V21"
-        stroke="var(--text-primary)"
-        strokeWidth="2"
-        strokeLinecap="square"
-      />
-      {/* Half-Raised Dock Door Panel (#241F18) with Amber Seam (#B4540A) */}
-      <path d="M5 5H19V9.5H5V5Z" fill="var(--text-primary)" />
-      <line
-        x1="5"
-        y1="7.25"
-        x2="19"
-        y2="7.25"
-        stroke="var(--accent)"
-        strokeWidth="1.5"
-      />
-      {/* Stamped BOL Document + Centered Analog Clock (#B4540A & #241F18) */}
-      <rect
-        x="6.5"
-        y="11"
-        width="11"
-        height="9"
-        stroke="var(--text-primary)"
-        strokeWidth="1.5"
-        fill="none"
-      />
-      <circle
-        cx="12"
-        cy="15.5"
-        r="3.2"
-        stroke="var(--accent)"
-        strokeWidth="1.8"
-      />
-      <path
-        d="M12 13.8V15.5L13.3 16.5"
-        stroke="var(--text-primary)"
-        strokeWidth="1.5"
-        strokeLinecap="round"
-      />
-    </svg>
-  );
-}
+export { computeClampedBrokerFitScore };
 
 function EmailCaptureForm({
   defaultSource,
@@ -307,6 +28,7 @@ function EmailCaptureForm({
   onClearTier,
   inputRef,
   onLeadCaptured,
+  onOpenWorkbench,
 }: {
   defaultSource: LeadSource;
   selectedTier: PricingTierName;
@@ -315,6 +37,7 @@ function EmailCaptureForm({
   onClearTier?: () => void;
   inputRef?: React.RefObject<HTMLInputElement | null>;
   onLeadCaptured: (record: LeadRecord) => void;
+  onOpenWorkbench: () => void;
 }) {
   const [email, setEmail] = useState('');
   const [honeypot, setHoneypot] = useState('');
@@ -359,10 +82,18 @@ function EmailCaptureForm({
   if (isSuccess) {
     return (
       <div className="capture-success-box" role="status">
-        You&apos;re on the founding-fleet list. We onboard in small batches —
-        you&apos;ll get an email from the founder within 7 days to set up your
-        free 90-day BOL detention audit, unlock your full Broker &amp; Lane Fit
-        Report, and tell us roughly how many trucks you run.
+        <p style={{ marginBottom: 'var(--space-16)' }}>
+          You&apos;re on the founding-fleet list. We onboard in small batches —
+          you&apos;ll get an email from the founder within 7 days to set up your
+          free 90-day audit and tell us roughly how many trucks you run.
+        </p>
+        <button
+          type="button"
+          className="btn-primary"
+          onClick={onOpenWorkbench}
+        >
+          Open Unlocked Dispatch Workbench (/app) →
+        </button>
       </div>
     );
   }
@@ -378,8 +109,7 @@ function EmailCaptureForm({
               </>
             ) : (
               <>
-                Queued for your fleet:{' '}
-                <strong>{activeSearchQuery}</strong>
+                Queued for your fleet: <strong>{activeSearchQuery}</strong>
               </>
             )}
           </span>
@@ -440,161 +170,55 @@ function EmailCaptureForm({
 }
 
 export default function App() {
+  // Option A Route & Auto-Unlock Controller (/ vs /app)
+  const [currentView, setCurrentView] = useState<'lander' | 'app'>(() =>
+    window.location.pathname === '/app' || window.location.hash === '#/app'
+      ? 'app'
+      : 'lander'
+  );
+  const [initialWorkbenchTab, setInitialWorkbenchTab] =
+    useState<WorkbenchTabId>('claim');
+  const [isWorkbenchUnlocked, setIsWorkbenchUnlocked] = useState<boolean>(() =>
+    Boolean(sessionStorage.getItem('bol_workbench_unlocked'))
+  );
+
+  // Compact 2-Tab Proof Teaser Switcher on / (Strict Lock #4)
+  const [landerTeaserTab, setLanderTeaserTab] = useState<'gps' | 'radar'>(
+    'gps'
+  );
+
+  // Shared Geospatial Proximity & Live Walk Test State
+  const [selectedYardScenario, setSelectedYardScenario] = useState('bumper');
+  const [liveGpsStatus, setLiveGpsStatus] = useState<string | null>(null);
+  const [proximity, setProximity] = useState<DockProximityResult>(() =>
+    evaluateDockProximity(
+      JOLIET_DOCK.lat,
+      JOLIET_DOCK.lon,
+      YARD_SCENARIOS[0].truckLat,
+      YARD_SCENARIOS[0].truckLon
+    )
+  );
+
+  // Shared 100m MGRS Facility Cluster & Clamped [0, 1] True-Yield State
+  const [selectedCluster, setSelectedCluster] = useState<BrokerFitBenchmark>(
+    BENCHMARK_LANES[0]
+  );
+  const [simPayout, setSimPayout] = useState(BENCHMARK_LANES[0].payoutRatePct);
+  const [simDwell, setSimDwell] = useState(BENCHMARK_LANES[0].avgDwellMins);
+  const [simRate, setSimRate] = useState(
+    BENCHMARK_LANES[0].detentionRateDollars
+  );
+  const [simNotice, setSimNotice] = useState(
+    BENCHMARK_LANES[0].noticeWindowHrs
+  );
+
+  // Lead Capture & Navigation State
   const [selectedTier, setSelectedTier] = useState<PricingTierName>(null);
   const [activeHeroSource, setActiveHeroSource] =
     useState<LeadSource>('hero_inline');
-
-  // Conversion Hierarchy Fix #4: Default tab is Worked Example (#4417), secondary tab is Live BOL Scanner
-  const [activeDemoTab, setActiveDemoTab] = useState<
-    'worked_example' | 'live_scanner'
-  >('worked_example');
-
-  // Live BOL Scanner & Ghost-Clerk Claim Builder state
-  const [rawBolText, setRawBolText] = useState(
-    SAMPLE_BOL_PRESETS[0].rawSnippet
-  );
-  const [isScanningBol, setIsScanningBol] = useState(false);
-  const [scanError, setScanError] = useState<string | null>(null);
-  const [claimLoadNumber, setClaimLoadNumber] = useState('4417');
-  const [claimRateConId, setClaimRateConId] = useState('RC-88214');
-  const [claimBrokerName, setClaimBrokerName] = useState(
-    'Midwest Contract Group'
-  );
-  const [claimBrokerMc, setClaimBrokerMc] = useState('481920');
-  const [claimFacility, setClaimFacility] = useState(
-    'Joliet, IL Cold & Dry Distribution'
-  );
-  const [claimArrival, setClaimArrival] = useState('08:04 CT');
-  const [claimDeparture, setClaimDeparture] = useState('14:37 CT');
-  const [claimNoticeSent, setClaimNoticeSent] = useState('10:12 CT');
-  const [claimTotalDwellMins, setClaimTotalDwellMins] = useState(393);
-  const [claimFreeTimeMins, setClaimFreeTimeMins] = useState(120);
-  const [claimDetentionRate, setClaimDetentionRate] = useState(60);
-  const [ghostEmailAlias, setGhostEmailAlias] = useState(
-    'billing@yourfleet.com'
-  );
-  const [followUpStage, setFollowUpStage] = useState<
-    'day0' | 'day7' | 'day14' | 'day30'
-  >('day0');
-  const [redactedFields, setRedactedFields] = useState<string[]>(
-    SAMPLE_BOL_PRESETS[0].redactedPiiFields
-  );
-  const [needsReviewNote, setNeedsReviewNote] = useState<string | null>(null);
-  const [driverCutPct, setDriverCutPct] = useState<number>(75);
-  const [copiedClaim, setCopiedClaim] = useState(false);
-  const [showBrokerPortalPreview, setShowBrokerPortalPreview] =
-    useState<boolean>(false);
-  const [brokerPortalStatus, setBrokerPortalStatus] = useState<
-    'pending' | 'approved_revised_rc' | 'disputed'
-  >('pending');
-  const [brokerDisputeReason, setBrokerDisputeReason] = useState<string>(
-    'Driver arrived after scheduled appointment'
-  );
-  const [activeCoords, setActiveCoords] = useState({
-    dockLat: SAMPLE_BOL_PRESETS[0].dockLat,
-    dockLon: SAMPLE_BOL_PRESETS[0].dockLon,
-    eldLat: SAMPLE_BOL_PRESETS[0].eldLat,
-    eldLon: SAMPLE_BOL_PRESETS[0].eldLon,
-  });
-  const [liveGpsStatus, setLiveGpsStatus] = useState<string | null>(null);
-  const [selectedClusterKey, setSelectedClusterKey] = useState<string>(
-    '16T-EN-099-976'
-  );
-
-  // Pro Carrier PDF Suite & Custom Blank-Form Replica state
-  const [selectedPdfFormType, setSelectedPdfFormType] =
-    useState<PdfFormTemplateType>('full_3page_suite');
-  const [customTemplateDataUrl, setCustomTemplateDataUrl] = useState<
-    string | null
-  >(null);
-  const [customTemplateName, setCustomTemplateName] = useState<string | null>(
-    null
-  );
-  const [customTemplateFormat, setCustomTemplateFormat] = useState<
-    'PNG' | 'JPEG'
-  >('PNG');
-  const [customTemplateMode, setCustomTemplateMode] =
-    useState<CustomTemplateMode>('letterhead_banner');
-  const [showCalibrationGrid, setShowCalibrationGrid] =
-    useState<boolean>(false);
-  const [customOffsetX, setCustomOffsetX] = useState<number>(0);
-  const [customOffsetY, setCustomOffsetY] = useState<number>(0);
-  const [printPreviewBlobUrl, setPrintPreviewBlobUrl] = useState<string | null>(
-    null
-  );
-
-  // Local 1-Meter Dock Grid & Planar Math (Zero external Map APIs)
-  const geoProof = computePlanarDockOffsetMeters(
-    activeCoords.dockLat,
-    activeCoords.dockLon,
-    activeCoords.eldLat,
-    activeCoords.eldLon
-  );
-  const offsetFeet = Math.round(geoProof.planarOffsetMeters * 3.28084);
-  const truckLengths = (offsetFeet / 70).toFixed(1); // 1 tractor + 53' trailer ≈ 70 ft
-  const enclosureStamp = evaluateBoundaryEnclosure(geoProof.planarOffsetMeters);
-
-  // B. Spatial Facility Intelligence & Detention Forecasting (100m Cluster ID Primary Key)
-  const activeClusterId =
-    selectedClusterKey === 'AUTO'
-      ? geoProof.facilityMgrs100mClusterId
-      : selectedClusterKey;
-  const facilityIntel = getSpatialFacilityIntelligence(
-    activeClusterId,
-    claimFacility
-  );
-
-  // C. Timestamp-to-Offset Visual Geofence Plot (ELD Breadcrumb Series)
-  const eldBreadcrumbSeries = computeEldBreadcrumbPlot(
-    activeCoords.dockLat,
-    activeCoords.dockLon,
-    [
-      {
-        tPlusMins: 0,
-        timestampLabel: claimArrival,
-        eventLabel: 'T+0 min: Arrival at facility boundary',
-        // ~120m planar offset from dock center
-        lat: activeCoords.dockLat + 0.00086,
-        lon: activeCoords.dockLon + 0.00082,
-      },
-      {
-        tPlusMins: 15,
-        timestampLabel: 'Backed into door',
-        eventLabel: 'T+15 min: Backed into dock door (sustained 3.5+ hrs)',
-        // ~12m planar offset (or active ELD test coordinate)
-        lat: activeCoords.eldLat,
-        lon: activeCoords.eldLon,
-      },
-      {
-        tPlusMins: 128,
-        timestampLabel: claimNoticeSent,
-        eventLabel: 'T+128 min: Detention notice transmitted at dock bumper',
-        lat: activeCoords.dockLat + 0.00008,
-        lon: activeCoords.dockLon + 0.00009,
-      },
-      {
-        tPlusMins: 225,
-        timestampLabel: claimDeparture,
-        eventLabel: 'T+225 min: Departed dock apron & cleared gate',
-        // ~185m planar offset (>150m boundary exit)
-        lat: activeCoords.dockLat + 0.00133,
-        lon: activeCoords.dockLon + 0.00125,
-      },
-    ]
-  );
-
-  // Interactive Broker & Lane Fit Search Radar state
-  const [searchInput, setSearchInput] = useState('');
   const [committedSearchQuery, setCommittedSearchQuery] = useState<
     string | null
   >(null);
-
-  // Interactive Clamped True-Yield Fit Calculator sliders
-  const [calcPayoutPct, setCalcPayoutPct] = useState(91.4);
-  const [calcDwellMins, setCalcDwellMins] = useState(78);
-  const [calcDetentionRate, setCalcDetentionRate] = useState(65);
-  const [calcNoticeHrs, setCalcNoticeHrs] = useState(24);
-
   const [openFaqIndex, setOpenFaqIndex] = useState<number | null>(0);
   const [lastCapturedLead, setLastCapturedLead] = useState<LeadRecord | null>(
     null
@@ -605,31 +229,118 @@ export default function App() {
   const finalCtaInputRef = useRef<HTMLInputElement | null>(null);
   const finalCtaSectionRef = useRef<HTMLElement | null>(null);
 
-  // Computed Ghost-Clerk Claim figures & Driver Settlement Split
-  const billableMins = Math.max(0, claimTotalDwellMins - claimFreeTimeMins);
-  const billableHoursFormatted = `${Math.floor(billableMins / 60)} hrs ${
-    billableMins % 60
-  } min`;
-  const totalDwellFormatted = `${Math.floor(claimTotalDwellMins / 60)} hrs ${
-    claimTotalDwellMins % 60
-  } min`;
-  const claimAmountDollars = Math.round(
-    (billableMins / 60) * claimDetentionRate
-  );
-  const driverCutDollars = (claimAmountDollars * (driverCutPct / 100)).toFixed(
-    2
-  );
-  const fleetNetDollars = (
-    claimAmountDollars *
-    ((100 - driverCutPct) / 100)
-  ).toFixed(2);
+  useEffect(() => {
+    const handlePopState = () => {
+      const isApp =
+        window.location.pathname === '/app' || window.location.hash === '#/app';
+      setCurrentView(isApp ? 'app' : 'lander');
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
 
-  // Clamped True-Yield Fit Score (Fix #2)
+  const navigateToView = (
+    view: 'lander' | 'app',
+    tabOverride?: WorkbenchTabId
+  ) => {
+    if (tabOverride) {
+      setInitialWorkbenchTab(tabOverride);
+    }
+    setCurrentView(view);
+    window.history.pushState({}, '', view === 'app' ? '/app' : '/');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const handleLeadCaptured = (record: LeadRecord) => {
+    setLastCapturedLead(record);
+    sessionStorage.setItem('bol_workbench_unlocked', 'true');
+    setIsWorkbenchUnlocked(true);
+  };
+
+  const handleSelectScenario = (scenarioId: string) => {
+    setSelectedYardScenario(scenarioId);
+    setLiveGpsStatus(null);
+    const found =
+      YARD_SCENARIOS.find((s) => s.id === scenarioId) || YARD_SCENARIOS[0];
+    const nextProx = evaluateDockProximity(
+      JOLIET_DOCK.lat,
+      JOLIET_DOCK.lon,
+      found.truckLat,
+      found.truckLon
+    );
+    setProximity(nextProx);
+    setCommittedSearchQuery(
+      `Dock Proof: ${nextProx.feetFromDock} ft (${nextProx.trailerLengths53Ft} Truck Lengths) · ${nextProx.mgrs1m}`
+    );
+  };
+
+  const handleRunLiveWalkTest = (simulate35FtWalk: boolean) => {
+    if (!navigator.geolocation) {
+      setLiveGpsStatus(
+        "Device GPS unavailable — running simulated +35 ft (Half a 53' Trailer) walk."
+      );
+      const fallbackResult = evaluateDockProximity(
+        JOLIET_DOCK.lat,
+        JOLIET_DOCK.lon,
+        JOLIET_DOCK.lat + 0.000096, // ~35 ft (10.7m)
+        JOLIET_DOCK.lon
+      );
+      setProximity(fallbackResult);
+      return;
+    }
+
+    setLiveGpsStatus('Acquiring hardware GPS lock (Zero Map APIs)...');
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        const baseLat = pos.coords.latitude;
+        const baseLon = pos.coords.longitude;
+        // +0.000096 deg latitude ≈ +35 feet (Half a 53' trailer)
+        const targetLat = simulate35FtWalk ? baseLat + 0.000096 : baseLat;
+        const result = evaluateDockProximity(
+          baseLat,
+          baseLon,
+          targetLat,
+          baseLon
+        );
+        setProximity(result);
+        setLiveGpsStatus(
+          simulate35FtWalk
+            ? "Live GPS Walk Test (+35 ft / Half a 53' Trailer simulated from your hardware GPS lock)"
+            : 'Hardware GPS locked as Virtual Dock Bumper (0 ft reference).'
+        );
+      },
+      () => {
+        const result = evaluateDockProximity(
+          JOLIET_DOCK.lat,
+          JOLIET_DOCK.lon,
+          JOLIET_DOCK.lat + 0.000096,
+          JOLIET_DOCK.lon
+        );
+        setProximity(result);
+        setLiveGpsStatus(
+          "Simulated +35 ft (Half a 53' Trailer) offset verified locally."
+        );
+      },
+      { enableHighAccuracy: true, timeout: 6000 }
+    );
+  };
+
+  const handleSelectCluster = (cluster: BrokerFitBenchmark) => {
+    setSelectedCluster(cluster);
+    setSimPayout(cluster.payoutRatePct);
+    setSimDwell(cluster.avgDwellMins);
+    setSimRate(cluster.detentionRateDollars);
+    setSimNotice(cluster.noticeWindowHrs);
+    setCommittedSearchQuery(
+      `${cluster.facilityClusterId} · ${cluster.lane} (${cluster.brokerProfile})`
+    );
+  };
+
   const liveBrokerFitScore = computeClampedBrokerFitScore({
-    payoutRatePct: calcPayoutPct,
-    avgDwellMins: calcDwellMins,
-    detentionRateDollars: calcDetentionRate,
-    noticeWindowHrs: calcNoticeHrs,
+    payoutRatePct: simPayout,
+    avgDwellMins: simDwell,
+    detentionRateDollars: simRate,
+    noticeWindowHrs: simNotice,
   });
 
   const handleNavCtaClick = () => {
@@ -643,235 +354,6 @@ export default function App() {
     finalCtaSectionRef.current?.scrollIntoView({ behavior: 'smooth' });
     setTimeout(() => finalCtaInputRef.current?.focus(), 400);
   };
-
-  const handleLoadSamplePreset = (preset: BolSamplePreset) => {
-    setRawBolText(preset.rawSnippet);
-    setClaimLoadNumber(preset.loadNumber);
-    setClaimRateConId(preset.rateConId);
-    setClaimBrokerName(preset.brokerName);
-    setClaimBrokerMc(preset.brokerMc);
-    setClaimFacility(preset.facilityLocation);
-    setClaimArrival(preset.arrivalTime);
-    setClaimDeparture(preset.departureTime);
-    setClaimNoticeSent(preset.noticeSentTime);
-    setClaimTotalDwellMins(preset.totalDwellMins);
-    setClaimFreeTimeMins(preset.freeTimeMins);
-    setClaimDetentionRate(preset.detentionRateDollars);
-    setRedactedFields(preset.redactedPiiFields);
-    setNeedsReviewNote(preset.needsReviewNote ?? null);
-    setActiveCoords({
-      dockLat: preset.dockLat,
-      dockLon: preset.dockLon,
-      eldLat: preset.eldLat,
-      eldLon: preset.eldLon,
-    });
-    const estDollars = Math.round(
-      (Math.max(0, preset.totalDwellMins - preset.freeTimeMins) / 60) *
-        preset.detentionRateDollars
-    );
-    setCommittedSearchQuery(
-      `Claim #${preset.loadNumber} ($${estDollars}) · MC #${preset.brokerMc}`
-    );
-  };
-
-  const executeGeminiBolScan = async (payload: {
-    rawText?: string;
-    imageBase64?: string;
-    mimeType?: string;
-  }) => {
-    setIsScanningBol(true);
-    setScanError(null);
-    try {
-      const response = await fetch('/api/bol/analyze', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-      const data = await response.json();
-      if (!response.ok || !data.extraction) {
-        throw new Error(
-          data.message || 'Could not extract BOL fields right now.'
-        );
-      }
-      const ext = data.extraction;
-      setClaimLoadNumber(String(ext.loadNumber || '4417'));
-      setClaimRateConId(String(ext.rateConId || 'RC-88214'));
-      setClaimBrokerName(String(ext.brokerName || 'Broker Arrangement'));
-      setClaimBrokerMc(String(ext.brokerMc || '481920'));
-      setClaimFacility(String(ext.facilityLocation || 'Receiver Dock'));
-      setClaimArrival(String(ext.arrivalTime || '08:04 CT'));
-      setClaimDeparture(String(ext.departureTime || '14:37 CT'));
-      setClaimNoticeSent(String(ext.noticeSentTime || '10:12 CT'));
-      const dwell = Number(ext.totalDwellMins) || 360;
-      const free = Number(ext.freeTimeMins) || 120;
-      const rate = Number(ext.detentionRateDollars) || 60;
-      setClaimTotalDwellMins(dwell);
-      setClaimFreeTimeMins(free);
-      setClaimDetentionRate(rate);
-      if (Array.isArray(ext.redactedPiiFields) && ext.redactedPiiFields.length) {
-        setRedactedFields(ext.redactedPiiFields);
-      }
-      const estDollars = Math.round((Math.max(0, dwell - free) / 60) * rate);
-      setCommittedSearchQuery(
-        `Scanned Claim #${ext.loadNumber || '4417'} ($${estDollars}) · MC #${
-          ext.brokerMc || '481920'
-        }`
-      );
-    } catch (err) {
-      setScanError(
-        err instanceof Error
-          ? err.message
-          : 'Failed to scan document. Using current values.'
-      );
-    } finally {
-      setIsScanningBol(false);
-    }
-  };
-
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      const resultStr = String(reader.result || '');
-      const base64Part = resultStr.split(',')[1];
-      if (base64Part) {
-        executeGeminiBolScan({
-          imageBase64: base64Part,
-          mimeType: file.type || 'image/png',
-          rawText: rawBolText,
-        });
-      }
-    };
-    reader.readAsDataURL(file);
-  };
-
-  const handleRadarSearchSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    const cleaned = searchInput.trim() || 'Joliet, IL → Atlanta, GA';
-    setCommittedSearchQuery(cleaned);
-    setTimeout(() => postDemoInputRef.current?.focus(), 150);
-  };
-
-  const handleCustomTemplateUpload = (
-    e: React.ChangeEvent<HTMLInputElement>
-  ) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const isJpeg =
-      file.type.includes('jpeg') ||
-      file.type.includes('jpg') ||
-      file.name.toLowerCase().endsWith('.jpg') ||
-      file.name.toLowerCase().endsWith('.jpeg');
-    const reader = new FileReader();
-    reader.onload = () => {
-      const dataUrl = String(reader.result || '');
-      if (dataUrl.startsWith('data:image/')) {
-        setCustomTemplateDataUrl(dataUrl);
-        setCustomTemplateName(file.name);
-        setCustomTemplateFormat(isJpeg ? 'JPEG' : 'PNG');
-        if (customTemplateMode === 'none') {
-          setCustomTemplateMode('full_page_replica');
-        }
-      }
-    };
-    reader.readAsDataURL(file);
-  };
-
-  const handleDownloadClaimPdf = (
-    override?: {
-      loadNumber: string;
-      rateConId: string;
-      brokerName: string;
-      brokerMc: string;
-      facility: string;
-      arrival: string;
-      departure: string;
-      noticeSent: string;
-      totalDwellFormatted: string;
-      freeTimeHrs: number;
-      billableFormatted: string;
-      rateDollars: number;
-      amountDollars: number;
-      senderAlias: string;
-      stageLabel: string;
-    },
-    formOverride?: PdfFormTemplateType,
-    action: 'download' | 'print_blob' = 'download'
-  ) => {
-    const data = override ?? {
-      loadNumber: claimLoadNumber,
-      rateConId: claimRateConId,
-      brokerName: claimBrokerName,
-      brokerMc: claimBrokerMc,
-      facility: claimFacility,
-      arrival: claimArrival,
-      departure: claimDeparture,
-      noticeSent: claimNoticeSent,
-      totalDwellFormatted,
-      freeTimeHrs: Math.round(claimFreeTimeMins / 60),
-      billableFormatted: billableHoursFormatted,
-      rateDollars: claimDetentionRate,
-      amountDollars: claimAmountDollars,
-      senderAlias: ghostEmailAlias,
-      stageLabel:
-        followUpStage === 'day0'
-          ? 'DAY 0 INITIAL DETENTION CLAIM'
-          : `${followUpStage.toUpperCase()} ACCOUNTING FOLLOW-UP`,
-    };
-
-    const targetForm = formOverride ?? selectedPdfFormType;
-    const blobUrl = generateCarrierPdfSuite(
-      {
-        ...data,
-        deliveryDate: '10/14',
-        totalDwellMins: claimTotalDwellMins,
-        billableMins,
-        driverCutPct,
-        driverCutDollars: (
-          data.amountDollars *
-          (driverCutPct / 100)
-        ).toFixed(2),
-        fleetNetDollars: (
-          data.amountDollars *
-          ((100 - driverCutPct) / 100)
-        ).toFixed(2),
-        planarOffsetMeters: geoProof.planarOffsetMeters,
-        offsetFeet,
-        truckLengths,
-        dockMgrs1m: geoProof.dockMgrs1m,
-        activeClusterId,
-        enclosureStamp,
-        facilityIntel,
-        eldBreadcrumbSeries,
-        customTemplateDataUrl,
-        customTemplateFormat,
-        customTemplateMode: customTemplateDataUrl ? customTemplateMode : 'none',
-        showCalibrationGrid,
-        customOffsetX,
-        customOffsetY,
-      },
-      targetForm,
-      action
-    );
-
-    if (action === 'print_blob' && blobUrl) {
-      setPrintPreviewBlobUrl(blobUrl);
-    }
-  };
-
-  const filteredBenchmarks = BENCHMARK_LANES.filter((item) => {
-    if (!searchInput.trim()) return true;
-    const q = searchInput.toLowerCase();
-    return (
-      item.queryMatch.toLowerCase().includes(q) ||
-      item.lane.toLowerCase().includes(q) ||
-      item.facilityClusterId.toLowerCase().includes(q) ||
-      item.fridayForecast.toLowerCase().includes(q) ||
-      item.brokerProfile.toLowerCase().includes(q) ||
-      item.verdict.toLowerCase().includes(q)
-    );
-  });
 
   const faqItems = [
     {
@@ -900,9 +382,37 @@ export default function App() {
     },
   ];
 
+  // RENDER STANDALONE 4-TAB DISPATCH WORKBENCH (/app)
+  if (currentView === 'app') {
+    return (
+      <DispatchWorkbench
+        isUnlocked={isWorkbenchUnlocked}
+        initialTab={initialWorkbenchTab}
+        selectedYardScenario={selectedYardScenario}
+        onSelectYardScenario={handleSelectScenario}
+        proximity={proximity}
+        liveGpsStatus={liveGpsStatus}
+        onRunLiveWalkTest={handleRunLiveWalkTest}
+        selectedCluster={selectedCluster}
+        onSelectCluster={handleSelectCluster}
+        simPayout={simPayout}
+        setSimPayout={setSimPayout}
+        simDwell={simDwell}
+        setSimDwell={setSimDwell}
+        simRate={simRate}
+        setSimRate={setSimRate}
+        simNotice={simNotice}
+        setSimNotice={setSimNotice}
+        onUnlockSuccess={handleLeadCaptured}
+        onBackToLander={() => navigateToView('lander')}
+      />
+    );
+  }
+
+  // RENDER CONVERSION LANDER (/) WITH COMPACT 2-TAB PROOF TEASER SWITCHER
   return (
     <div>
-      {/* NAVIGATION: Strictly 3 links + 1 primary CTA (Fix #3) */}
+      {/* NAVIGATION: Strictly 3 links + 1 primary CTA */}
       <header className="site-nav">
         <div className="container nav-inner">
           <a href="#" className="brand-link">
@@ -950,7 +460,8 @@ export default function App() {
                   defaultSource={activeHeroSource}
                   selectedTier={null}
                   inputRef={heroInputRef}
-                  onLeadCaptured={setLastCapturedLead}
+                  onLeadCaptured={handleLeadCaptured}
+                  onOpenWorkbench={() => navigateToView('app', 'claim')}
                 />
               </div>
 
@@ -1182,7 +693,7 @@ export default function App() {
           </div>
         </section>
 
-        {/* DEMO MOMENT + SECONDARY LIVE BOL SCANNER + BROKER FIT RADAR */}
+        {/* WORKED EXAMPLE (LOAD #4417 = $275.00) + COMPACT 2-TAB PROOF TEASER SWITCHER */}
         <section className="section-band-surface">
           <div className="container">
             <div className="demo-header-row">
@@ -1194,1594 +705,512 @@ export default function App() {
                 <h2>Here&apos;s one load, start to finish.</h2>
               </div>
 
-              {/* Conversion Hierarchy Fix #4: Worked Example Default + Crisp Secondary Toggle */}
-              <div
-                className="demo-tab-switcher"
-                role="tablist"
-                aria-label="Demo Mode"
+              <button
+                type="button"
+                className="btn-secondary"
+                onClick={() => navigateToView('app', 'claim')}
               >
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={activeDemoTab === 'worked_example'}
-                  className={`demo-tab-btn ${
-                    activeDemoTab === 'worked_example'
-                      ? 'demo-tab-btn-active'
-                      : ''
-                  }`}
-                  onClick={() => setActiveDemoTab('worked_example')}
-                >
-                  Worked Example (Load #4417)
-                </button>
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={activeDemoTab === 'live_scanner'}
-                  className={`demo-tab-btn ${
-                    activeDemoTab === 'live_scanner'
-                      ? 'demo-tab-btn-active'
-                      : ''
-                  }`}
-                  onClick={() => setActiveDemoTab('live_scanner')}
-                >
-                  Try Live BOL Scanner &amp; Claim Builder
-                </button>
+                Launch Dispatch Workbench (/app) →
+              </button>
+            </div>
+
+            {/* STATIC WORKED EXAMPLE: LOAD #4417 ($275.00 VERBATIM) */}
+            <div className="demo-panels-grid">
+              {/* LEFT PANEL */}
+              <div className="demo-card">
+                <h3 className="demo-panel-label">
+                  The load, as your driver lived it
+                </h3>
+                <ul className="timeline-list">
+                  <li className="timeline-item">
+                    Load #4417 — Dry van, Joliet, IL receiver
+                  </li>
+                  <li className="timeline-item">
+                    Rate con, page 2: &ldquo;Detention{' '}
+                    <span className="claim-dollar-figure">$60/hr</span> after 2
+                    hrs free time. Carrier must notify broker within 24 hrs of
+                    occurrence.&rdquo;
+                  </li>
+                  <li className="timeline-item">
+                    08:02 CT — Arrived at receiver (ELD/GPS timestamp)
+                  </li>
+                  <li className="timeline-item">
+                    10:12 CT — Detention notice emailed to broker (inside the
+                    24-hr window)
+                  </li>
+                  <li className="timeline-item">
+                    14:31 CT — BOL signed by receiver
+                  </li>
+                  <li className="timeline-item">
+                    14:37 CT — Departed (ELD/GPS timestamp)
+                  </li>
+                  <li className="timeline-item timeline-item-highlight">
+                    Total dwell: 6 hrs 35 min
+                  </li>
+                </ul>
+              </div>
+
+              {/* RIGHT PANEL */}
+              <div>
+                <div className="demo-email-card">
+                  <h3 className="demo-panel-label">
+                    The claim BillOff-Lading files the same day (via
+                    Ghost-Clerk)
+                  </h3>
+                  <div className="email-subject-line">
+                    Subject: Detention Claim — Load #4417 —{' '}
+                    <span className="claim-dollar-figure">$275.00</span> —
+                    documentation attached
+                  </div>
+                  <div className="email-body-copy">
+                    <p>
+                      Per rate confirmation #RC-88214 (detention: $60/hr after 2
+                      hrs free time), we are submitting a detention claim for
+                      Load #4417, delivered 10/14.
+                    </p>
+                    <ul className="email-meta-list">
+                      <li>— Arrival (ELD/GPS): 08:02 CT</li>
+                      <li>— Departure (ELD/GPS): 14:37 CT</li>
+                      <li>
+                        — Total dwell: 6 hrs 35 min · Free time: 2 hrs ·
+                        Billable: 4 hrs 35 min
+                      </li>
+                      <li>
+                        — Amount due:{' '}
+                        <span className="claim-dollar-figure">$275.00</span>
+                      </li>
+                      <li>
+                        — Notice sent: 10:12 CT (timestamped copy attached)
+                      </li>
+                    </ul>
+                    <p>
+                      Attached: signed BOL, ELD log excerpt, rate con page 2.
+                    </p>
+                    <p>
+                      Please confirm payment within 15 days. We&apos;ll follow
+                      up on day 7, 14, and 30.
+                    </p>
+                  </div>
+                </div>
+                <p className="demo-followup-caption">
+                  Sent from your white-labeled carrier billing address ·
+                  Follow-ups scheduled: Day 7 · Day 14 · Day 30.
+                </p>
               </div>
             </div>
 
-            {activeDemoTab === 'worked_example' ? (
-              <div className="demo-panels-grid">
-                {/* LEFT PANEL */}
-                <div className="demo-card">
-                  <h3 className="demo-panel-label">
-                    The load, as your driver lived it
+            {/* COMPACT 2-TAB PROOF TEASER SWITCHER ON / (Strict Lock #4) */}
+            <div className="radar-box">
+              <div
+                style={{
+                  display: 'flex',
+                  flexWrap: 'wrap',
+                  justifyContent: 'space-between',
+                  alignItems: 'flex-end',
+                  gap: 'var(--space-16)',
+                }}
+              >
+                <div>
+                  <p className="demo-intro-line">
+                    Live Engineering Proof — Test Our Sub-Meter Geospatial Math
+                    &amp; Broker Friction Index
+                  </p>
+                  <h3>
+                    Verify the dock-bumper GPS &amp; lane radar right here.
                   </h3>
-                  <ul className="timeline-list">
-                    <li className="timeline-item">
-                      Load #4417 — Dry van, Joliet, IL receiver
-                    </li>
-                    <li className="timeline-item">
-                      Rate con, page 2: &ldquo;Detention{' '}
-                      <span className="claim-dollar-figure">$60/hr</span> after
-                      2 hrs free time. Carrier must notify broker within 24 hrs
-                      of occurrence.&rdquo;
-                    </li>
-                    <li className="timeline-item">
-                      08:04 CT — Arrived at receiver (ELD/GPS timestamp)
-                    </li>
-                    <li className="timeline-item">
-                      10:12 CT — Detention notice emailed to broker (inside the
-                      24-hr window)
-                    </li>
-                    <li className="timeline-item">
-                      14:31 CT — BOL signed by receiver
-                    </li>
-                    <li className="timeline-item">
-                      14:37 CT — Departed (ELD/GPS timestamp)
-                    </li>
-                    <li className="timeline-item timeline-item-highlight">
-                      Total dwell: 6 hrs 33 min
-                    </li>
-                  </ul>
                 </div>
 
-                {/* RIGHT PANEL */}
-                <div>
-                  <div className="demo-email-card">
-                    <h3 className="demo-panel-label">
-                      The claim BillOff-Lading files the same day (via
-                      Ghost-Clerk)
-                    </h3>
-                    <div className="email-subject-line">
-                      Subject: Detention Claim — Load #4417 —{' '}
-                      <span className="claim-dollar-figure">$275.00</span> —
-                      documentation attached
-                    </div>
-                    <div className="email-body-copy">
-                      <p>
-                        Per rate confirmation #RC-88214 (detention: $60/hr after
-                        2 hrs free time), we are submitting a detention claim
-                        for Load #4417, delivered 10/14.
-                      </p>
-                      <ul className="email-meta-list">
-                        <li>— Arrival (ELD/GPS): 08:04 CT</li>
-                        <li>— Departure (ELD/GPS): 14:37 CT</li>
-                        <li>
-                          — Total dwell: 6 hrs 33 min · Free time: 2 hrs ·
-                          Billable: 4 hrs 35 min
-                        </li>
-                        <li>
-                          — Amount due:{' '}
-                          <span className="claim-dollar-figure">$275.00</span>
-                        </li>
-                        <li>
-                          — Notice sent: 10:12 CT (timestamped copy attached)
-                        </li>
-                      </ul>
-                      <p>
-                        Attached: signed BOL, ELD log excerpt, rate con page 2.
-                      </p>
-                      <p>
-                        Please confirm payment within 15 days. We&apos;ll follow
-                        up on day 7, 14, and 30.
-                      </p>
-                    </div>
-                  </div>
-                  <p className="demo-followup-caption">
-                    Sent from your white-labeled carrier billing address ·
-                    Follow-ups scheduled: Day 7 · Day 14 · Day 30.
-                  </p>
-                  <div style={{ marginTop: 'var(--space-12)' }}>
+                <div
+                  className="demo-tab-switcher"
+                  role="tablist"
+                  aria-label="Live Claim Proof Teasers"
+                >
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={landerTeaserTab === 'gps'}
+                    className={`demo-tab-btn ${
+                      landerTeaserTab === 'gps' ? 'demo-tab-btn-active' : ''
+                    }`}
+                    onClick={() => setLanderTeaserTab('gps')}
+                  >
+                    1. Test 53&apos; Trailer Dock GPS
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={landerTeaserTab === 'radar'}
+                    className={`demo-tab-btn ${
+                      landerTeaserTab === 'radar' ? 'demo-tab-btn-active' : ''
+                    }`}
+                    onClick={() => setLanderTeaserTab('radar')}
+                  >
+                    2. Test 100m MGRS Broker &amp; Facility Radar
+                  </button>
+                </div>
+              </div>
+
+              {/* TEASER TAB 1: 53' TRAILER DOCK GPS & +35 FT WALK TEST */}
+              {landerTeaserTab === 'gps' ? (
+                <div
+                  style={{
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 'var(--space-24)',
+                  }}
+                >
+                  <div className="radar-filter-chips">
+                    {YARD_SCENARIOS.map((scen) => (
+                      <button
+                        key={scen.id}
+                        type="button"
+                        className={`radar-chip ${
+                          selectedYardScenario === scen.id
+                            ? 'radar-chip-active'
+                            : ''
+                        }`}
+                        onClick={() => handleSelectScenario(scen.id)}
+                      >
+                        {scen.label}
+                      </button>
+                    ))}
                     <button
                       type="button"
                       className="btn-secondary"
-                      onClick={() =>
-                        handleDownloadClaimPdf({
-                          loadNumber: '4417',
-                          rateConId: 'RC-88214',
-                          brokerName: 'Midwest Contract Group',
-                          brokerMc: '481920',
-                          facility: 'Joliet, IL Dry Van Receiver',
-                          arrival: '08:04 CT',
-                          departure: '14:37 CT',
-                          noticeSent: '10:12 CT',
-                          totalDwellFormatted: '6 hrs 33 min',
-                          freeTimeHrs: 2,
-                          billableFormatted: '4 hrs 35 min',
-                          rateDollars: 60,
-                          amountDollars: 275,
-                          senderAlias: ghostEmailAlias,
-                          stageLabel: 'DAY 0 INITIAL DETENTION CLAIM',
-                        })
-                      }
+                      style={{ padding: '6px 16px' }}
+                      onClick={() => handleRunLiveWalkTest(false)}
                     >
-                      Download Claim Evidence PDF (#4417)
+                      Lock My Current Spot (0 ft Dock)
                     </button>
-                  </div>
-                </div>
-              </div>
-            ) : (
-              /* SECONDARY TAB: LIVE BOL OCR ANALYZER & GHOST-CLERK CLAIM BUILDER */
-              <div className="scanner-workbench">
-                <div className="radar-filter-chips">
-                  {SAMPLE_BOL_PRESETS.map((preset) => (
                     <button
-                      key={preset.id}
                       type="button"
-                      className="radar-chip"
-                      onClick={() => handleLoadSamplePreset(preset)}
+                      className="btn-primary"
+                      style={{ padding: '6px 16px' }}
+                      onClick={() => handleRunLiveWalkTest(true)}
                     >
-                      Load Sample: {preset.label}
+                      Test +35 ft Walk (Half a 53&apos; Trailer)
                     </button>
-                  ))}
-                </div>
+                  </div>
 
-                <div className="scanner-grid">
-                  {/* Left: OCR Input & Zero-PII Scrubber */}
-                  <div className="scanner-panel">
-                    <h3>1. Rate-Con &amp; Signed BOL OCR Analyzer</h3>
-                    <p className="small-text">
-                      Paste a Rate Confirmation / BOL snippet or upload a
-                      document photo. Our server-side Gemini 2.5 Flash parser
-                      extracts detention terms while stripping private carrier
-                      identity (`[DEC-10]`).
+                  {liveGpsStatus && (
+                    <p
+                      className="small-text"
+                      style={{ color: 'var(--accent)', fontWeight: 600 }}
+                    >
+                      {liveGpsStatus}
                     </p>
+                  )}
 
-                    <label className="field-label">
-                      <span>Rate Confirmation / BOL Text or ELD Export</span>
-                      <textarea
-                        className="textarea-input"
-                        value={rawBolText}
-                        onChange={(e) => setRawBolText(e.target.value)}
-                      />
-                    </label>
-
-                    <div
-                      style={{
-                        display: 'flex',
-                        flexWrap: 'wrap',
-                        gap: 'var(--space-8)',
-                        alignItems: 'center',
-                      }}
-                    >
-                      <button
-                        type="button"
-                        className="btn-primary"
-                        disabled={isScanningBol}
-                        onClick={() =>
-                          executeGeminiBolScan({ rawText: rawBolText })
-                        }
-                      >
-                        {isScanningBol
-                          ? 'Scanning with Gemini 2.5 Flash...'
-                          : 'Extract BOL & Scrub Carrier PII'}
-                      </button>
-
-                      <label
-                        className="btn-secondary"
-                        style={{ cursor: 'pointer' }}
-                      >
-                        Upload BOL / Rate-Con Image
-                        <input
-                          type="file"
-                          accept="image/*"
-                          onChange={handleFileUpload}
-                          style={{ display: 'none' }}
-                        />
-                      </label>
+                  <div className="steps-grid">
+                    <div className="benefit-card">
+                      <span className="small-text">
+                        Distance from Dock Bumper
+                      </span>
+                      <div className="step-number">
+                        {proximity.feetFromDock} ft ({proximity.metersFromDock}
+                        m)
+                      </div>
+                      <span className="small-text tabular-nums">
+                        <strong>{proximity.trailerLengths53Ft}</strong> Truck
+                        Lengths (53&apos; rig scale)
+                      </span>
                     </div>
 
-                    {scanError && (
-                      <p
-                        className="small-text"
-                        style={{ color: 'var(--accent)' }}
-                      >
-                        {scanError}
-                      </p>
-                    )}
-
-                    <div className="field-grid-2">
-                      <label className="field-label">
-                        <span>White-Label Ghost-Clerk Sender</span>
-                        <input
-                          type="text"
-                          className="capture-input"
-                          value={ghostEmailAlias}
-                          onChange={(e) => setGhostEmailAlias(e.target.value)}
-                        />
-                      </label>
-                      <label className="field-label">
-                        <span>Broker MC#</span>
-                        <input
-                          type="text"
-                          className="capture-input"
-                          value={claimBrokerMc}
-                          onChange={(e) => setClaimBrokerMc(e.target.value)}
-                        />
-                      </label>
-                      <label className="field-label">
-                        <span>Total Dwell (mins)</span>
-                        <input
-                          type="number"
-                          className="capture-input"
-                          value={claimTotalDwellMins}
-                          onChange={(e) => {
-                            const val = Math.max(0, Number(e.target.value));
-                            setClaimTotalDwellMins(val);
-                            const est = Math.round(
-                              (Math.max(0, val - claimFreeTimeMins) / 60) *
-                                claimDetentionRate
-                            );
-                            setCommittedSearchQuery(
-                              `Claim #${claimLoadNumber} ($${est}) · MC #${claimBrokerMc}`
-                            );
-                          }}
-                        />
-                      </label>
-                      <label className="field-label">
-                        <span>Detention Rate ($/hr)</span>
-                        <input
-                          type="number"
-                          className="capture-input"
-                          value={claimDetentionRate}
-                          onChange={(e) => {
-                            const val = Math.max(0, Number(e.target.value));
-                            setClaimDetentionRate(val);
-                            const est = Math.round(
-                              (Math.max(
-                                0,
-                                claimTotalDwellMins - claimFreeTimeMins
-                              ) /
-                                60) *
-                                val
-                            );
-                            setCommittedSearchQuery(
-                              `Claim #${claimLoadNumber} ($${est}) · MC #${claimBrokerMc}`
-                            );
-                          }}
-                        />
-                      </label>
+                    <div className="benefit-card">
+                      <span className="small-text">
+                        150m Automated Boundary Verdict
+                      </span>
+                      <h3 style={{ color: 'var(--accent)' }}>
+                        {proximity.dispatcherVerdict}
+                      </h3>
+                      <span className="small-text tabular-nums">
+                        {proximity.boundaryStatus}
+                      </span>
                     </div>
 
-                    {needsReviewNote && (
-                      <div
-                        className="pii-redaction-box"
-                        style={{
-                          borderColor: 'var(--accent)',
-                          display: 'flex',
-                          justifyContent: 'space-between',
-                          alignItems: 'center',
-                          gap: 'var(--space-12)',
-                        }}
-                      >
-                        <div>
-                          <strong style={{ color: 'var(--accent)' }}>
-                            NEEDS REVIEW (Non-Blocking Parser Guard):
-                          </strong>
-                          <div className="small-text">{needsReviewNote}</div>
-                        </div>
-                        <button
-                          type="button"
-                          className="radar-chip"
-                          onClick={() => setNeedsReviewNote(null)}
-                        >
-                          Approve Timestamp
-                        </button>
-                      </div>
-                    )}
-
-                    <div className="pii-redaction-box">
-                      <div
-                        style={{
-                          display: 'flex',
-                          justifyContent: 'space-between',
-                          alignItems: 'center',
-                          flexWrap: 'wrap',
-                          gap: 'var(--space-8)',
-                          marginBottom: 'var(--space-8)',
-                        }}
-                      >
-                        <strong>
-                          A. Automated Boundary Enclosure (150m Radius Stamp):
-                        </strong>
-                        <span
-                          className="small-text tabular-nums"
-                          style={{
-                            color: enclosureStamp.inBounds
-                              ? 'var(--accent)'
-                              : 'var(--text-primary)',
-                            fontWeight: 700,
-                          }}
-                        >
-                          {geoProof.planarOffsetMeters}m ({offsetFeet} ft ·{' '}
-                          {truckLengths} truck lengths)
-                        </span>
-                      </div>
-
-                      {/* Bold Page-1 Verification Stamp Preview */}
-                      <div
-                        style={{
-                          padding: 'var(--space-8) var(--space-12)',
-                          border:
-                            enclosureStamp.tier === 'APRON'
-                              ? '2px solid var(--accent)'
-                              : '1px solid var(--text-primary)',
-                          backgroundColor: enclosureStamp.inBounds
-                            ? 'var(--surface)'
-                            : 'var(--surface-hover)',
-                          marginBottom: 'var(--space-8)',
-                          display: 'flex',
-                          justifyContent: 'space-between',
-                          alignItems: 'center',
-                          flexWrap: 'wrap',
-                          gap: 'var(--space-8)',
-                        }}
-                      >
-                        <strong
-                          className="tabular-nums"
-                          style={{
-                            color:
-                              enclosureStamp.tier === 'APRON'
-                                ? 'var(--accent)'
-                                : 'var(--text-primary)',
-                            letterSpacing: '0.02em',
-                          }}
-                        >
-                          {enclosureStamp.stampText}
-                        </strong>
-                        <span className="small-text tabular-nums">
-                          {enclosureStamp.inBounds
-                            ? 'IN-BOUNDS (≤ 150m)'
-                            : 'OUT-OF-BOUNDS (> 150m)'}{' '}
-                          · Grid {geoProof.dockMgrs1m}
-                          {liveGpsStatus ? ` · ${liveGpsStatus}` : ''}
-                        </span>
-                      </div>
-
-                      <div className="radar-filter-chips">
-                        <button
-                          type="button"
-                          className={`radar-chip ${
-                            enclosureStamp.tier === 'APRON'
-                              ? 'radar-chip-active'
-                              : ''
-                          }`}
-                          onClick={() => {
-                            setLiveGpsStatus(null);
-                            // ~12m (39 ft) Backed Into Door
-                            setActiveCoords((prev) => ({
-                              ...prev,
-                              eldLat: prev.dockLat + 0.00008,
-                              eldLon: prev.dockLon + 0.00009,
-                            }));
-                          }}
-                        >
-                          Backed Into Door #14 (12m / 39 ft · &lt;50m)
-                        </button>
-                        <button
-                          type="button"
-                          className={`radar-chip ${
-                            enclosureStamp.tier === 'STAGING'
-                              ? 'radar-chip-active'
-                              : ''
-                          }`}
-                          onClick={() => {
-                            setLiveGpsStatus(null);
-                            // ~120m (394 ft) Staging Area
-                            setActiveCoords((prev) => ({
-                              ...prev,
-                              eldLat: prev.dockLat + 0.00086,
-                              eldLon: prev.dockLon + 0.00082,
-                            }));
-                          }}
-                        >
-                          Facility Staging Area (120m / 394 ft · &lt;150m)
-                        </button>
-                        <button
-                          type="button"
-                          className={`radar-chip ${
-                            enclosureStamp.tier === 'OFF_SITE'
-                              ? 'radar-chip-active'
-                              : ''
-                          }`}
-                          onClick={() => {
-                            setLiveGpsStatus(null);
-                            // ~185m (607 ft) Departed / Off-Site
-                            setActiveCoords((prev) => ({
-                              ...prev,
-                              eldLat: prev.dockLat + 0.00133,
-                              eldLon: prev.dockLon + 0.00125,
-                            }));
-                          }}
-                        >
-                          Off-Site / Departed (185m / 607 ft · &gt;150m)
-                        </button>
-                        <button
-                          type="button"
-                          className="radar-chip"
-                          onClick={() => {
-                            if (!navigator.geolocation) {
-                              setLiveGpsStatus(
-                                'Browser GPS unavailable — using Joliet dock lock'
-                              );
-                              return;
-                            }
-                            setLiveGpsStatus('Locking your exact spot...');
-                            navigator.geolocation.getCurrentPosition(
-                              (pos) => {
-                                const { latitude, longitude } = pos.coords;
-                                setActiveCoords({
-                                  dockLat: latitude,
-                                  dockLon: longitude,
-                                  eldLat: latitude + 0.00003,
-                                  eldLon: longitude + 0.00003,
-                                });
-                                setLiveGpsStatus(
-                                  'Pinned to your live device location (<5m lock)'
-                                );
-                              },
-                              () => {
-                                setLiveGpsStatus(
-                                  'Location permission skipped — showing Joliet Dock #14'
-                                );
-                              },
-                              { enableHighAccuracy: true, timeout: 6000 }
-                            );
-                          }}
-                        >
-                          Pin My Exact Spot Right Now
-                        </button>
-                      </div>
-                    </div>
-
-                    {/* B. Spatial Facility Intelligence & Detention Forecasting (100m Cluster ID) */}
-                    <div className="pii-redaction-box">
-                      <div
-                        style={{
-                          display: 'flex',
-                          justifyContent: 'space-between',
-                          alignItems: 'center',
-                          flexWrap: 'wrap',
-                          gap: 'var(--space-8)',
-                          marginBottom: 'var(--space-8)',
-                        }}
-                      >
-                        <strong>
-                          B. Spatial Facility Intelligence (100m Cluster Key):
-                        </strong>
-                        <div className="radar-filter-chips">
-                          {(
-                            [
-                              '16T-EN-099-976',
-                              '14S-PB-113-147',
-                              '16S-BD-223-926',
-                              'AUTO',
-                            ] as const
-                          ).map((cid) => (
-                            <button
-                              key={cid}
-                              type="button"
-                              className={`radar-chip ${
-                                selectedClusterKey === cid
-                                  ? 'radar-chip-active'
-                                  : ''
-                              }`}
-                              onClick={() => setSelectedClusterKey(cid)}
-                            >
-                              {cid === 'AUTO'
-                                ? `Live BOL Grid (${geoProof.facilityMgrs100mClusterId})`
-                                : cid}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-
-                      <div
-                        className="small-text tabular-nums"
-                        style={{
-                          display: 'flex',
-                          flexDirection: 'column',
-                          gap: 'var(--space-4)',
-                        }}
-                      >
-                        <div>
-                          <strong>Average Dwell Forecast:</strong>{' '}
-                          <span style={{ color: 'var(--accent)' }}>
-                            &ldquo;{facilityIntel.fridayDwellForecast}&rdquo;
-                          </span>
-                        </div>
-                        <div>
-                          <strong>
-                            Broker Friction Index ({facilityIntel.verifiedBolCount}{' '}
-                            Verified BOLs at {facilityIntel.clusterId}):
-                          </strong>{' '}
-                          {facilityIntel.claimsApprovedPct}% Claims Approved vs.{' '}
-                          <strong>
-                            {facilityIntel.claimsDisputedPct}% Disputed
-                          </strong>
-                        </div>
-                        <div>
-                          <strong>Pre-Flight Rate Negotiation Advisory:</strong>{' '}
-                          {facilityIntel.preFlightNegotiationAdvice}
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="pii-redaction-box">
-                      <strong>
-                        Zero-PII Scrubber Log (Stripped Before Broker Index):
-                      </strong>
-                      <div className="small-text">
-                        {redactedFields.join(' · ')}
-                      </div>
+                    <div className="benefit-card">
+                      <span className="small-text">
+                        1-Meter Dock Stamp &amp; 100m Cluster
+                      </span>
+                      <h3 className="tabular-nums">{proximity.mgrs1m}</h3>
+                      <span className="small-text tabular-nums">
+                        Facility Cluster Key:{' '}
+                        <strong>{proximity.mgrs100mClusterId}</strong>
+                      </span>
                     </div>
                   </div>
 
-                  {/* Right: Live Ghost-Clerk Claim Packet Preview */}
-                  <div className="scanner-panel">
-                    <div
+                  <div className="email-meta-list">
+                    <strong>
+                      Timestamp-to-Offset Visual Geofence Plot (Embedded on Page
+                      1 of Claim PDF):
+                    </strong>
+                    <svg
+                      viewBox="0 0 720 135"
                       style={{
-                        display: 'flex',
-                        justifyContent: 'space-between',
-                        alignItems: 'center',
-                        flexWrap: 'wrap',
-                        gap: 'var(--space-8)',
+                        width: '100%',
+                        height: 'auto',
+                        marginTop: 'var(--space-8)',
                       }}
                     >
-                      <h3>2. Generated Ghost-Clerk Claim Packet</h3>
-                      <div className="radar-filter-chips">
-                        {(['day0', 'day7', 'day14', 'day30'] as const).map(
-                          (stage) => (
-                            <button
-                              key={stage}
-                              type="button"
-                              className={`radar-chip ${
-                                followUpStage === stage
-                                  ? 'radar-chip-active'
-                                  : ''
-                              }`}
-                              onClick={() => setFollowUpStage(stage)}
-                            >
-                              {stage === 'day0'
-                                ? 'Day 0 Claim'
-                                : stage === 'day7'
-                                ? 'Day 7 Follow-up'
-                                : stage === 'day14'
-                                ? 'Day 14 Notice'
-                                : 'Day 30 Final'}
-                            </button>
-                          )
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="email-subject-line">
-                      <div>
-                        From: <strong>{ghostEmailAlias}</strong> (Zero
-                        BillOff-Lading branding)
-                      </div>
-                      <div>
-                        Subject:{' '}
-                        {followUpStage === 'day0'
-                          ? `Detention Claim — Load #${claimLoadNumber} — $${claimAmountDollars}.00 — Revised Rate Con Requested`
-                          : `[${followUpStage.toUpperCase()} FOLLOW-UP] Open Detention Invoice — Load #${claimLoadNumber} ($${claimAmountDollars}.00)`}
-                      </div>
-                    </div>
-
-                    <div className="email-body-copy">
-                      <p>
-                        Per rate confirmation #{claimRateConId} with{' '}
-                        {claimBrokerName} (MC #{claimBrokerMc} · detention: $
-                        {claimDetentionRate}/hr after{' '}
-                        {Math.round(claimFreeTimeMins / 60)} hrs free time), we
-                        are submitting{' '}
-                        {followUpStage === 'day0'
-                          ? 'our documented detention claim'
-                          : `our ${followUpStage.replace(
-                              'day',
-                              'Day-'
-                            )} accounting follow-up`}{' '}
-                        for Load #{claimLoadNumber} at {claimFacility}.
-                      </p>
-                      <ul className="email-meta-list">
-                        <li>
-                          — Arrival (0.5-mi ELD Geofence): {claimArrival} ·
-                          Departure: {claimDeparture}
-                        </li>
-                        <li>
-                          — Total dwell: {totalDwellFormatted} · Free time:{' '}
-                          {Math.round(claimFreeTimeMins / 60)} hrs · Billable:{' '}
-                          {billableHoursFormatted}
-                        </li>
-                        <li>
-                          — Amount due:{' '}
-                          <span className="claim-dollar-figure">
-                            ${claimAmountDollars}.00
-                          </span>{' '}
-                          (Please issue Revised Rate Con #{claimRateConId}-REV1)
-                        </li>
-                        <li>
-                          — Notice sent: {claimNoticeSent} (inside rate-con
-                          window)
-                        </li>
-                        <li>
-                          — Broker 1-Click Approval Portal (No Login Required):{' '}
-                          <strong>
-                            ladingledger.com/approve/{claimRateConId.toLowerCase()}
-                          </strong>
-                        </li>
-                      </ul>
-                      <p>
-                        Attached: signed BOL, Page-1 Automated Boundary Stamp (
-                        <strong>{enclosureStamp.stampText}</strong>), and
-                        Timestamp-to-Offset Geofence Plot.
-                      </p>
-                    </div>
-
-                    {/* C. Timestamp-to-Offset Visual Geofence Plot (Embedded SVG + Included in PDF) */}
-                    <div className="pii-redaction-box">
-                      <div
-                        style={{
-                          display: 'flex',
-                          justifyContent: 'space-between',
-                          alignItems: 'center',
-                          flexWrap: 'wrap',
-                          gap: 'var(--space-8)',
-                          marginBottom: 'var(--space-8)',
-                        }}
-                      >
-                        <strong>
-                          C. Timestamp-to-Offset Visual Geofence Plot (Embedded
-                          in PDF):
-                        </strong>
-                        <span className="small-text tabular-nums">
-                          150m Dock Enclosure · 50m Apron Threshold
-                        </span>
-                      </div>
-
-                      <svg
-                        viewBox="0 0 520 130"
-                        style={{
-                          width: '100%',
-                          height: 'auto',
-                          backgroundColor: 'var(--background)',
-                          border: '1px solid var(--border)',
-                          marginBottom: 'var(--space-8)',
-                        }}
-                        role="img"
-                        aria-label="Timestamp-to-Offset Visual Geofence Plot showing T+0m at 120m, T+15m at 12m sustained for 3.5 hours, and T+225m at 185m"
-                      >
-                        {/* 150m Facility Boundary Line */}
-                        <line
-                          x1="20"
-                          y1="32"
-                          x2="500"
-                          y2="32"
-                          stroke="var(--text-muted)"
-                          strokeWidth="1"
-                          strokeDasharray="4 4"
-                        />
-                        <text
-                          x="26"
-                          y="26"
-                          fill="var(--text-muted)"
-                          fontSize="10"
-                          fontFamily="Inter, sans-serif"
-                        >
-                          150m Facility Staging Boundary
-                        </text>
-
-                        {/* 50m Dock Apron Line */}
-                        <line
-                          x1="20"
-                          y1="82"
-                          x2="500"
-                          y2="82"
-                          stroke="var(--accent)"
-                          strokeWidth="1.2"
-                          strokeDasharray="3 3"
-                        />
-                        <text
-                          x="26"
-                          y="76"
-                          fill="var(--accent)"
-                          fontSize="10"
-                          fontFamily="Inter, sans-serif"
-                        >
-                          50m Dock Apron Verified Zone
-                        </text>
-
-                        {/* Connected Breadcrumb Trajectory Polyline */}
-                        {(() => {
-                          const xs = [65, 195, 335, 455];
-                          const ys = eldBreadcrumbSeries.map((pt) => {
-                            const clamped = Math.min(
-                              200,
-                              Math.max(0, pt.offsetMeters)
-                            );
-                            return Math.round(112 - (clamped / 200) * 96);
-                          });
-                          const pointsAttr = xs
-                            .map((x, idx) => `${x},${ys[idx]}`)
-                            .join(' ');
-                          return (
-                            <>
-                              <polyline
-                                fill="none"
-                                stroke="var(--text-primary)"
-                                strokeWidth="2"
-                                points={pointsAttr}
-                              />
-                              {eldBreadcrumbSeries.map((pt, idx) => (
-                                <g key={pt.tPlusMins}>
-                                  <circle
-                                    cx={xs[idx]}
-                                    cy={ys[idx]}
-                                    r="4.5"
-                                    fill="var(--accent)"
-                                  />
-                                  <text
-                                    x={xs[idx]}
-                                    y={ys[idx] > 65 ? ys[idx] - 9 : ys[idx] + 15}
-                                    textAnchor="middle"
-                                    fill="var(--text-primary)"
-                                    fontSize="10"
-                                    fontWeight="700"
-                                    fontFamily="Inter, sans-serif"
-                                  >
-                                    T+{pt.tPlusMins}m ({pt.offsetMeters}m)
-                                  </text>
-                                </g>
-                              ))}
-                            </>
-                          );
-                        })()}
-                      </svg>
-
-                      <div
-                        className="small-text tabular-nums"
-                        style={{
-                          display: 'flex',
-                          flexDirection: 'column',
-                          gap: 'var(--space-4)',
-                        }}
-                      >
-                        <div>
-                          • <strong>T+0 min ({claimArrival}):</strong> Arrival
-                          at facility boundary (
-                          <strong>
-                            {eldBreadcrumbSeries[0].offsetMeters}m
-                          </strong>{' '}
-                          / {eldBreadcrumbSeries[0].offsetFeet} ft) —{' '}
-                          {eldBreadcrumbSeries[0].enclosure.stampText}
-                        </div>
-                        <div>
-                          • <strong>T+15 min:</strong> Backed into dock door (
-                          <strong>
-                            {eldBreadcrumbSeries[1].offsetMeters}m
-                          </strong>{' '}
-                          / {eldBreadcrumbSeries[1].offsetFeet} ft — sustained
-                          for 3.5+ hours) —{' '}
-                          <span style={{ color: 'var(--accent)' }}>
-                            {eldBreadcrumbSeries[1].enclosure.stampText}
-                          </span>
-                        </div>
-                        <div>
-                          • <strong>T+225 min ({claimDeparture}):</strong>{' '}
-                          Departed dock apron (
-                          <strong>
-                            {eldBreadcrumbSeries[3].offsetMeters}m
-                          </strong>{' '}
-                          / {eldBreadcrumbSeries[3].offsetFeet} ft) —{' '}
-                          {eldBreadcrumbSeries[3].enclosure.stampText}
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Interactive Broker One-Click Approval Link Preview (#4 in PDF) */}
-                    <div className="pii-redaction-box">
-                      <div
-                        style={{
-                          display: 'flex',
-                          justifyContent: 'space-between',
-                          alignItems: 'center',
-                          flexWrap: 'wrap',
-                          gap: 'var(--space-8)',
-                        }}
-                      >
-                        <strong>
-                          No-Login Broker 1-Click Approval Link (Included in
-                          Email):
-                        </strong>
-                        <button
-                          type="button"
-                          className="radar-chip"
-                          onClick={() => {
-                            setShowBrokerPortalPreview(
-                              !showBrokerPortalPreview
-                            );
-                            setBrokerPortalStatus('pending');
-                          }}
-                        >
-                          {showBrokerPortalPreview
-                            ? 'Hide Broker Portal View'
-                            : 'Preview What Broker Sees'}
-                        </button>
-                      </div>
-
-                      {showBrokerPortalPreview && (
-                        <div
-                          style={{
-                            marginTop: 'var(--space-12)',
-                            paddingTop: 'var(--space-12)',
-                            borderTop: '1px solid var(--border)',
-                            display: 'flex',
-                            flexDirection: 'column',
-                            gap: 'var(--space-8)',
-                          }}
-                        >
-                          <div className="small-text">
-                            <strong>
-                              Broker View — Load #{claimLoadNumber} (Rate Con #
-                              {claimRateConId}):
-                            </strong>{' '}
-                            0.5-mi GPS Geofence &amp; Signed BOL verified (
-                            {claimArrival} – {claimDeparture}).
-                          </div>
-
-                          {brokerPortalStatus === 'pending' && (
-                            <div
-                              style={{
-                                display: 'flex',
-                                flexWrap: 'wrap',
-                                gap: 'var(--space-8)',
-                              }}
-                            >
-                              <button
-                                type="button"
-                                className="btn-primary"
-                                onClick={() =>
-                                  setBrokerPortalStatus('approved_revised_rc')
-                                }
-                              >
-                                Approve &amp; Issue Revised Rate Con (+$
-                                {claimAmountDollars}.00)
-                              </button>
-                              <button
-                                type="button"
-                                className="btn-secondary"
-                                onClick={() =>
-                                  setBrokerPortalStatus('disputed')
-                                }
-                              >
-                                Dispute Claim (Requires Reason)
-                              </button>
-                            </div>
-                          )}
-
-                          {brokerPortalStatus === 'approved_revised_rc' && (
-                            <div className="small-text">
-                              <strong style={{ color: 'var(--accent)' }}>
-                                ✓ Broker Approved in 1 Click:
-                              </strong>{' '}
-                              Revised Rate Con #{claimRateConId}-REV1 (+$
-                              {claimAmountDollars}.00) uploaded &amp; queued for
-                              factoring payout.
-                            </div>
-                          )}
-
-                          {brokerPortalStatus === 'disputed' && (
-                            <div
-                              style={{
-                                display: 'flex',
-                                flexDirection: 'column',
-                                gap: 'var(--space-8)',
-                              }}
-                            >
-                              <label className="field-label">
-                                <span>
-                                  Broker Forced to Select Specific Dispute
-                                  Reason:
-                                </span>
-                                <select
-                                  className="capture-input"
-                                  value={brokerDisputeReason}
-                                  onChange={(e) =>
-                                    setBrokerDisputeReason(e.target.value)
-                                  }
-                                >
-                                  <option value="Driver arrived after scheduled appointment">
-                                    Driver arrived after scheduled appointment
-                                  </option>
-                                  <option value="Facility states load was ready earlier">
-                                    Facility states load was ready earlier
-                                  </option>
-                                  <option value="Missing paper sign-in sheet attachment">
-                                    Missing paper sign-in sheet attachment
-                                  </option>
-                                </select>
-                              </label>
-                              <div className="small-text">
-                                <strong>Instant Dispatcher Counter-Proof:</strong>{' '}
-                                Historical Evidence Vault attaches 0.5-mile
-                                Motive/Samsara GPS entry at {claimArrival} + 14
-                                prior on-time loads for MC #{claimBrokerMc}.
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Driver Detention Settlement Split (Encourages 24-Hr Driver BOL Uploads) */}
-                    <div className="pii-redaction-box">
-                      <div
-                        style={{
-                          display: 'flex',
-                          justifyContent: 'space-between',
-                          alignItems: 'center',
-                          flexWrap: 'wrap',
-                          gap: 'var(--space-8)',
-                          marginBottom: 'var(--space-4)',
-                        }}
-                      >
-                        <strong>
-                          Driver Settlement Split (Why Drivers Snap BOLs at the
-                          Dock):
-                        </strong>
-                        <span className="small-text tabular-nums">
-                          Driver Cut: {driverCutPct}% ($
-                          {driverCutDollars}) · Fleet Net: {100 - driverCutPct}%
-                          (${fleetNetDollars})
-                        </span>
-                      </div>
-                      <input
-                        type="range"
-                        min={50}
-                        max={100}
-                        step={5}
-                        value={driverCutPct}
-                        onChange={(e) =>
-                          setDriverCutPct(Number(e.target.value))
-                        }
-                        style={{
-                          width: '100%',
-                          accentColor: 'var(--accent)',
-                          cursor: 'pointer',
-                        }}
-                        aria-label="Driver detention payout share percentage"
+                      <rect
+                        width="720"
+                        height="135"
+                        fill="var(--surface)"
+                        stroke="var(--border)"
                       />
+                      <line
+                        x1="40"
+                        y1="40"
+                        x2="680"
+                        y2="40"
+                        stroke="var(--accent)"
+                        strokeDasharray="6 4"
+                        strokeWidth="1.5"
+                      />
+                      <text
+                        x="50"
+                        y="32"
+                        fill="var(--accent)"
+                        fontSize="11"
+                        fontWeight="600"
+                      >
+                        150m Facility Boundary Gate (492 ft)
+                      </text>
+                      <line
+                        x1="40"
+                        y1="88"
+                        x2="680"
+                        y2="88"
+                        stroke="var(--border)"
+                        strokeWidth="1.5"
+                      />
+                      <text x="50" y="81" fill="var(--text-muted)" fontSize="11">
+                        50m Dock Bumper Apron (164 ft)
+                      </text>
+                      <polyline
+                        fill="none"
+                        stroke="var(--text-primary)"
+                        strokeWidth="2.5"
+                        points="90,56 210,112 510,112 640,22"
+                      />
+                      <circle cx="90" cy="56" r="5" fill="var(--accent)" />
+                      <text
+                        x="65"
+                        y="73"
+                        fill="var(--text-primary)"
+                        fontSize="11"
+                        fontWeight="600"
+                      >
+                        T+0m: 394 ft (Bullpen)
+                      </text>
+                      <circle cx="210" cy="112" r="5" fill="var(--accent)" />
+                      <circle cx="510" cy="112" r="5" fill="var(--accent)" />
+                      <text
+                        x="220"
+                        y="128"
+                        fill="var(--accent)"
+                        fontSize="11"
+                        fontWeight="700"
+                      >
+                        T+15m to T+210m: {proximity.feetFromDock} ft —{' '}
+                        {proximity.boundaryStatus}
+                      </text>
+                      <circle
+                        cx="640"
+                        cy="22"
+                        r="5"
+                        fill="var(--text-primary)"
+                      />
+                      <text
+                        x="545"
+                        y="18"
+                        fill="var(--text-primary)"
+                        fontSize="11"
+                      >
+                        T+225m: 607 ft (Departed)
+                      </text>
+                    </svg>
+                  </div>
+                </div>
+              ) : (
+                /* TEASER TAB 2: 100M MGRS BROKER & FACILITY RADAR */
+                <div
+                  style={{
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 'var(--space-24)',
+                  }}
+                >
+                  <div className="radar-filter-chips">
+                    {BENCHMARK_LANES.map((item) => (
+                      <button
+                        key={item.id}
+                        type="button"
+                        className={`radar-chip ${
+                          selectedCluster.id === item.id
+                            ? 'radar-chip-active'
+                            : ''
+                        }`}
+                        onClick={() => handleSelectCluster(item)}
+                      >
+                        {item.facilityClusterId} · {item.lane}
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="demo-panels-grid">
+                    <div className="benefit-card">
+                      <h3>
+                        Cluster {selectedCluster.facilityClusterId} —{' '}
+                        {selectedCluster.facilityName}
+                      </h3>
+                      <p className="small-text">
+                        <strong>Broker Arrangement:</strong>{' '}
+                        {selectedCluster.brokerProfile}
+                      </p>
+                      <p className="small-text">
+                        <strong>Average Dwell Forecast:</strong>{' '}
+                        {selectedCluster.fridayForecast}
+                      </p>
+                      <p className="small-text">
+                        <strong>Broker Friction Index:</strong>{' '}
+                        <span className="claim-dollar-figure">
+                          {selectedCluster.detentionPayoutRate}
+                        </span>
+                      </p>
+                      <div className="email-meta-list">
+                        <strong>Pre-Flight Rate Negotiation Advisory:</strong>
+                        <span>{selectedCluster.preFlightAdvisory}</span>
+                      </div>
                     </div>
 
-                    {/* PRO CARRIER PDF FORM SUITE & CUSTOM BLANK-FORM REPLICA STUDIO */}
-                    <div className="pii-redaction-box">
+                    <div className="benefit-card">
                       <div
                         style={{
                           display: 'flex',
                           justifyContent: 'space-between',
-                          alignItems: 'center',
-                          flexWrap: 'wrap',
-                          gap: 'var(--space-8)',
-                          marginBottom: 'var(--space-8)',
+                          alignItems: 'baseline',
                         }}
                       >
-                        <strong>
-                          Pro Carrier PDF Form Suite &amp; Custom Form Template
-                          Match:
-                        </strong>
-                        <span className="small-text tabular-nums">
-                          {customTemplateName
-                            ? `Custom Form Active: ${customTemplateName}`
-                            : 'Standard 3-Form Suite Ready'}
+                        <h3>True-Yield Broker Fit Calculator</h3>
+                        <span className="step-number">
+                          {liveBrokerFitScore} / 100
                         </span>
                       </div>
 
-                      <p
-                        className="small-text"
-                        style={{ marginBottom: 'var(--space-8)' }}
-                      >
-                        Print or download individual pro forms or the full
-                        3-page bundle — or upload your own blank company
-                        worksheet / letterhead (PNG/JPG) and we&apos;ll stamp
-                        your load, spatial proof, and driver payroll math right
-                        onto your form.
-                      </p>
-
-                      {/* Form Selector Tabs */}
-                      <div
-                        className="radar-filter-chips"
-                        style={{ marginBottom: 'var(--space-8)' }}
-                      >
-                        {(
-                          [
-                            {
-                              id: 'full_3page_suite',
-                              label: 'Full 3-Page Carrier Suite',
-                            },
-                            {
-                              id: 'claim_evidence_packet',
-                              label: 'Form 101-A: Claim Evidence Packet',
-                            },
-                            {
-                              id: 'revised_rate_con_invoice',
-                              label: 'Form 102-B: Revised Rate Con & Invoice',
-                            },
-                            {
-                              id: 'driver_settlement_sheet',
-                              label: 'Form 103-C: Driver Payroll Worksheet',
-                            },
-                          ] as const
-                        ).map((item) => (
-                          <button
-                            key={item.id}
-                            type="button"
-                            className={`radar-chip ${
-                              selectedPdfFormType === item.id
-                                ? 'radar-chip-active'
-                                : ''
-                            }`}
-                            onClick={() => setSelectedPdfFormType(item.id)}
-                          >
-                            {item.label}
-                          </button>
-                        ))}
-                      </div>
-
-                      {/* Upload Custom Blank Form / Letterhead + Calibration Grid */}
-                      <div
-                        style={{
-                          display: 'flex',
-                          flexWrap: 'wrap',
-                          gap: 'var(--space-8)',
-                          alignItems: 'center',
-                          marginBottom: 'var(--space-8)',
-                        }}
-                      >
-                        <label
-                          className="radar-chip"
-                          style={{ cursor: 'pointer', fontWeight: 600 }}
-                        >
-                          {customTemplateName
-                            ? 'Replace Uploaded Carrier Form / Logo'
-                            : '+ Upload Your Blank Form / Letterhead (PNG/JPG)'}
-                          <input
-                            type="file"
-                            accept="image/png,image/jpeg,image/jpg"
-                            onChange={handleCustomTemplateUpload}
-                            style={{ display: 'none' }}
-                          />
-                        </label>
-
-                        {customTemplateDataUrl && (
-                          <>
-                            <button
-                              type="button"
-                              className={`radar-chip ${
-                                customTemplateMode === 'full_page_replica'
-                                  ? 'radar-chip-active'
-                                  : ''
-                              }`}
-                              onClick={() =>
-                                setCustomTemplateMode('full_page_replica')
-                              }
-                            >
-                              Full-Page Blank Form Overlay
-                            </button>
-                            <button
-                              type="button"
-                              className={`radar-chip ${
-                                customTemplateMode === 'letterhead_banner'
-                                  ? 'radar-chip-active'
-                                  : ''
-                              }`}
-                              onClick={() =>
-                                setCustomTemplateMode('letterhead_banner')
-                              }
-                            >
-                              Top-Right Letterhead Stamp
-                            </button>
-                            <button
-                              type="button"
-                              className="radar-chip"
-                              onClick={() => {
-                                setCustomTemplateDataUrl(null);
-                                setCustomTemplateName(null);
-                                setCustomOffsetX(0);
-                                setCustomOffsetY(0);
-                              }}
-                            >
-                              Clear Custom Form
-                            </button>
-                          </>
-                        )}
-
-                        <label
-                          className="small-text"
-                          style={{
-                            display: 'inline-flex',
-                            alignItems: 'center',
-                            gap: '6px',
-                            cursor: 'pointer',
-                          }}
-                        >
-                          <input
-                            type="checkbox"
-                            checked={showCalibrationGrid}
-                            onChange={(e) =>
-                              setShowCalibrationGrid(e.target.checked)
-                            }
-                            style={{ accentColor: 'var(--accent)' }}
-                          />
+                      <div className="sliders-grid">
+                        <label className="slider-control">
                           <span>
-                            Overlay 36pt Coordinate Calibration Grid (for form
-                            alignment)
+                            Verified Payout: <strong>{simPayout}%</strong>
                           </span>
+                          <input
+                            type="range"
+                            min={0}
+                            max={100}
+                            step={1}
+                            value={simPayout}
+                            onChange={(e) =>
+                              setSimPayout(Number(e.target.value))
+                            }
+                          />
+                        </label>
+
+                        <label className="slider-control">
+                          <span>
+                            BOL Avg Dwell: <strong>{simDwell} mins</strong>
+                          </span>
+                          <input
+                            type="range"
+                            min={30}
+                            max={480}
+                            step={5}
+                            value={simDwell}
+                            onChange={(e) =>
+                              setSimDwell(Number(e.target.value))
+                            }
+                          />
+                        </label>
+
+                        <label className="slider-control">
+                          <span>
+                            Detention Rate: <strong>${simRate}/hr</strong>
+                          </span>
+                          <input
+                            type="range"
+                            min={20}
+                            max={100}
+                            step={5}
+                            value={simRate}
+                            onChange={(e) => setSimRate(Number(e.target.value))}
+                          />
+                        </label>
+
+                        <label className="slider-control">
+                          <span>
+                            Notice Window: <strong>{simNotice} hrs</strong>
+                          </span>
+                          <input
+                            type="range"
+                            min={2}
+                            max={48}
+                            step={2}
+                            value={simNotice}
+                            onChange={(e) =>
+                              setSimNotice(Number(e.target.value))
+                            }
+                          />
                         </label>
                       </div>
 
-                      {/* Optional X/Y Calibration Nudge Sliders when Custom Form or Grid is active */}
-                      {(customTemplateDataUrl || showCalibrationGrid) && (
-                        <div
-                          className="field-grid-2"
-                          style={{ marginBottom: 'var(--space-8)' }}
-                        >
-                          <label className="slider-control">
-                            <span className="small-text">
-                              Horizontal Form Alignment Offset (X):{' '}
-                              <strong>{customOffsetX} pt</strong>
-                            </span>
-                            <input
-                              type="range"
-                              min={-40}
-                              max={40}
-                              step={2}
-                              value={customOffsetX}
-                              onChange={(e) =>
-                                setCustomOffsetX(Number(e.target.value))
-                              }
-                            />
-                          </label>
-                          <label className="slider-control">
-                            <span className="small-text">
-                              Vertical Form Alignment Offset (Y):{' '}
-                              <strong>{customOffsetY} pt</strong>
-                            </span>
-                            <input
-                              type="range"
-                              min={-40}
-                              max={40}
-                              step={2}
-                              value={customOffsetY}
-                              onChange={(e) =>
-                                setCustomOffsetY(Number(e.target.value))
-                              }
-                            />
-                          </label>
-                        </div>
-                      )}
-
-                      {printPreviewBlobUrl && (
-                        <div style={{ marginTop: 'var(--space-8)' }}>
-                          <div
-                            style={{
-                              display: 'flex',
-                              justifyContent: 'space-between',
-                              alignItems: 'center',
-                              marginBottom: 'var(--space-4)',
-                            }}
-                          >
-                            <strong className="small-text">
-                              Live Printable PDF Form Preview (Use your browser
-                              Print icon inside the viewer):
-                            </strong>
-                            <button
-                              type="button"
-                              className="radar-chip"
-                              onClick={() => setPrintPreviewBlobUrl(null)}
-                            >
-                              Close Preview
-                            </button>
-                          </div>
-                          <iframe
-                            src={printPreviewBlobUrl}
-                            title="Printable Carrier PDF Form Suite Preview"
-                            style={{
-                              width: '100%',
-                              height: '420px',
-                              border: '1px solid var(--text-primary)',
-                              backgroundColor: 'var(--surface)',
-                            }}
-                          />
-                        </div>
-                      )}
-                    </div>
-
-                    <div
-                      style={{
-                        display: 'flex',
-                        gap: 'var(--space-8)',
-                        flexWrap: 'wrap',
-                      }}
-                    >
-                      <button
-                        type="button"
-                        className="btn-secondary"
-                        onClick={() => {
-                          navigator.clipboard?.writeText(
-                            `Subject: Detention Claim — Load #${claimLoadNumber} — $${claimAmountDollars}.00\nFrom: ${ghostEmailAlias}\nPer rate confirmation #${claimRateConId}, total dwell ${totalDwellFormatted}, billable ${billableHoursFormatted}, amount due $${claimAmountDollars}.00. Approve in 1 click: https://ladingledger.com/approve/${claimRateConId.toLowerCase()}`
-                          );
-                          setCopiedClaim(true);
-                          setTimeout(() => setCopiedClaim(false), 2000);
-                        }}
-                      >
-                        {copiedClaim
-                          ? 'Copied Claim Packet'
-                          : 'Copy Ghost-Clerk Email'}
-                      </button>
-
-                      <button
-                        type="button"
-                        className="btn-secondary"
-                        onClick={() =>
-                          handleDownloadClaimPdf(
-                            undefined,
-                            selectedPdfFormType,
-                            'download'
-                          )
-                        }
-                      >
-                        {selectedPdfFormType === 'full_3page_suite'
-                          ? 'Download Full 3-Page PDF Suite'
-                          : selectedPdfFormType === 'claim_evidence_packet'
-                          ? 'Download Form 101-A (Evidence PDF)'
-                          : selectedPdfFormType === 'revised_rate_con_invoice'
-                          ? 'Download Form 102-B (Revised Rate Con)'
-                          : 'Download Form 103-C (Driver Payroll PDF)'}
-                      </button>
-
-                      <button
-                        type="button"
-                        className="btn-secondary"
-                        onClick={() =>
-                          handleDownloadClaimPdf(
-                            undefined,
-                            selectedPdfFormType,
-                            'print_blob'
-                          )
-                        }
-                      >
-                        Preview &amp; Print Pro PDF Forms
-                      </button>
-
-                      <button
-                        type="button"
-                        className="btn-primary"
-                        onClick={() => {
-                          setCommittedSearchQuery(
-                            `Claim #${claimLoadNumber} ($${claimAmountDollars}.00) · MC #${claimBrokerMc}`
-                          );
-                          postDemoInputRef.current?.focus();
-                        }}
-                      >
-                        Send this claim packet + my 90-day audit
-                      </button>
+                      <p className="small-text">
+                        {liveBrokerFitScore >= 75
+                          ? 'Green-Light Fit — Fast dock turns & high accessorial recovery.'
+                          : liveBrokerFitScore >= 50
+                          ? 'Caution — Pad linehaul rate or enforce strict ELD notice.'
+                          : 'High Detention Trap — Severe unpaid dock sit risk.'}
+                      </p>
                     </div>
                   </div>
                 </div>
-              </div>
-            )}
+              )}
 
-            {/* INTERACTIVE BROKER & LANE FIT SEARCH RADAR (DEC-11 & DEC-13) */}
-            <div className="radar-box">
-              <div>
-                <h3>
-                  Open-Market Broker &amp; Lane Fit Search (Powered by Real
-                  BOLs)
-                </h3>
-                <p className="small-text">
-                  Test the index: search a corridor or broker MC# below to see
-                  how BillOff-Lading ranks broker arrangements by BOL-verified
-                  dock dwell time, rate-con fairness, and actual detention
-                  payouts.
-                </p>
-              </div>
-
-              <form
-                className="radar-search-bar"
-                onSubmit={handleRadarSearchSubmit}
-              >
-                <input
-                  type="text"
-                  className="capture-input"
-                  placeholder="Search Lane (e.g. Joliet, IL to Atlanta, GA) or Broker MC#..."
-                  value={searchInput}
-                  onChange={(e) => setSearchInput(e.target.value)}
-                />
-                <button type="submit" className="btn-secondary">
-                  Check Broker &amp; Dock Fit
-                </button>
-              </form>
-
-              <div className="radar-filter-chips">
-                {BENCHMARK_LANES.map((item) => (
-                  <button
-                    key={item.id}
-                    type="button"
-                    className={`radar-chip ${
-                      committedSearchQuery === item.queryMatch
-                        ? 'radar-chip-active'
-                        : ''
-                    }`}
-                    onClick={() => {
-                      setSearchInput(item.queryMatch);
-                      setCommittedSearchQuery(item.queryMatch);
-                      setCalcPayoutPct(item.payoutRatePct);
-                      setCalcDwellMins(item.avgDwellMins);
-                      setCalcDetentionRate(item.detentionRateDollars);
-                      setCalcNoticeHrs(item.noticeWindowHrs);
-                    }}
-                  >
-                    {item.queryMatch}
-                  </button>
-                ))}
-              </div>
-
-              <table className="radar-results-table">
-                <thead>
-                  <tr>
-                    <th>Lane &amp; 100m Cluster ID</th>
-                    <th>Broker Arrangement</th>
-                    <th>BOL-Verified Dwell &amp; Forecast</th>
-                    <th>Rate-Con Clause</th>
-                    <th>Broker Friction Index</th>
-                    <th>True-Yield Fit</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {filteredBenchmarks.map((row) => {
-                    const computedRowScore = computeClampedBrokerFitScore({
-                      payoutRatePct: row.payoutRatePct,
-                      avgDwellMins: row.avgDwellMins,
-                      detentionRateDollars: row.detentionRateDollars,
-                      noticeWindowHrs: row.noticeWindowHrs,
-                    });
-                    return (
-                      <tr
-                        key={row.id}
-                        onClick={() => {
-                          setCommittedSearchQuery(row.queryMatch);
-                          setSelectedClusterKey(
-                            row.facilityClusterId === '16T-EN-099-976' ||
-                              row.facilityClusterId === '14S-PB-113-147' ||
-                              row.facilityClusterId === '16S-BD-223-926'
-                              ? row.facilityClusterId
-                              : '16T-EN-099-976'
-                          );
-                          setCalcPayoutPct(row.payoutRatePct);
-                          setCalcDwellMins(row.avgDwellMins);
-                          setCalcDetentionRate(row.detentionRateDollars);
-                          setCalcNoticeHrs(row.noticeWindowHrs);
-                        }}
-                      >
-                        <td>
-                          <strong>{row.lane}</strong>
-                          <div className="small-text tabular-nums">
-                            Cluster Key: {row.facilityClusterId}
-                          </div>
-                        </td>
-                        <td>{row.brokerProfile}</td>
-                        <td>
-                          <div>{row.bolVerifiedDwell}</div>
-                          <div className="small-text">{row.fridayForecast}</div>
-                        </td>
-                        <td>{row.rateConTerms}</td>
-                        <td>
-                          <span className="claim-dollar-figure">
-                            {row.detentionPayoutRate}
-                          </span>
-                        </td>
-                        <td>
-                          <strong>{computedRowScore} / 100</strong> —{' '}
-                          {row.verdict}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-
-              {/* CLAMPED TRUE-YIELD BROKER FIT CALCULATOR (Fix #2) */}
-              <div className="calculator-strip">
-                <div>
-                  <h3>Simulate Any Broker Rate-Con &amp; Dock Turn</h3>
-                  <p className="small-text" style={{ marginBottom: '12px' }}>
-                    Drag the sliders to test a broker&apos;s detention terms
-                    using our clamped True-Yield Fit formula (40% Verified
-                    Payout Rate · 30% Dock Dwell · 20% Hourly Rate · 10% Notice
-                    Window).
-                  </p>
-                  <div className="sliders-grid">
-                    <label className="slider-control">
-                      <span>
-                        Verified Detention Payout: <strong>{calcPayoutPct}%</strong>
-                      </span>
-                      <input
-                        type="range"
-                        min={0}
-                        max={100}
-                        step={1}
-                        value={calcPayoutPct}
-                        onChange={(e) => {
-                          const v = Number(e.target.value);
-                          setCalcPayoutPct(v);
-                          setCommittedSearchQuery(
-                            `Custom Broker Fit (${computeClampedBrokerFitScore({
-                              payoutRatePct: v,
-                              avgDwellMins: calcDwellMins,
-                              detentionRateDollars: calcDetentionRate,
-                              noticeWindowHrs: calcNoticeHrs,
-                            })}/100 · ${calcDwellMins}m dwell)`
-                          );
-                        }}
-                      />
-                    </label>
-
-                    <label className="slider-control">
-                      <span>
-                        BOL-Verified Avg Dwell:{' '}
-                        <strong>
-                          {Math.floor(calcDwellMins / 60)}h {calcDwellMins % 60}
-                          m ({calcDwellMins} mins)
-                        </strong>
-                      </span>
-                      <input
-                        type="range"
-                        min={30}
-                        max={480}
-                        step={5}
-                        value={calcDwellMins}
-                        onChange={(e) => {
-                          const v = Number(e.target.value);
-                          setCalcDwellMins(v);
-                          setCommittedSearchQuery(
-                            `Custom Broker Fit (${computeClampedBrokerFitScore({
-                              payoutRatePct: calcPayoutPct,
-                              avgDwellMins: v,
-                              detentionRateDollars: calcDetentionRate,
-                              noticeWindowHrs: calcNoticeHrs,
-                            })}/100 · ${v}m dwell)`
-                          );
-                        }}
-                      />
-                    </label>
-
-                    <label className="slider-control">
-                      <span>
-                        Rate-Con Detention Rate:{' '}
-                        <strong>${calcDetentionRate}/hr</strong>
-                      </span>
-                      <input
-                        type="range"
-                        min={20}
-                        max={100}
-                        step={5}
-                        value={calcDetentionRate}
-                        onChange={(e) => {
-                          const v = Number(e.target.value);
-                          setCalcDetentionRate(v);
-                          setCommittedSearchQuery(
-                            `Custom Broker Fit (${computeClampedBrokerFitScore({
-                              payoutRatePct: calcPayoutPct,
-                              avgDwellMins: calcDwellMins,
-                              detentionRateDollars: v,
-                              noticeWindowHrs: calcNoticeHrs,
-                            })}/100 · $${v}/hr)`
-                          );
-                        }}
-                      />
-                    </label>
-
-                    <label className="slider-control">
-                      <span>
-                        Rate-Con Notice Window:{' '}
-                        <strong>{calcNoticeHrs} hrs</strong>
-                      </span>
-                      <input
-                        type="range"
-                        min={2}
-                        max={72}
-                        step={2}
-                        value={calcNoticeHrs}
-                        onChange={(e) => {
-                          const v = Number(e.target.value);
-                          setCalcNoticeHrs(v);
-                          setCommittedSearchQuery(
-                            `Custom Broker Fit (${computeClampedBrokerFitScore({
-                              payoutRatePct: calcPayoutPct,
-                              avgDwellMins: calcDwellMins,
-                              detentionRateDollars: calcDetentionRate,
-                              noticeWindowHrs: v,
-                            })}/100 · ${v}h notice)`
-                          );
-                        }}
-                      />
-                    </label>
-                  </div>
-                </div>
-
-                <div className="calculator-score-readout">
-                  <span className="small-text">
-                    Clamped True-Yield Broker Fit Score
-                  </span>
-                  <div className="score-giant">{liveBrokerFitScore} / 100</div>
-                  <p className="small-text">
-                    {liveBrokerFitScore >= 75
-                      ? 'Green-Light Fit — Fast turns & high accessorial recovery.'
-                      : liveBrokerFitScore >= 50
-                      ? 'Caution — Pad linehaul rate or enforce strict ELD notice.'
-                      : 'High Detention Trap — Severe unpaid dock sit risk.'}
-                  </p>
-                </div>
-              </div>
-
+              {/* INLINE EMAIL CAPTURE BAR + LAUNCH DISPATCH WORKBENCH (/app) CTA */}
               <div className="post-demo-capture-band" style={{ marginTop: 0 }}>
-                <div>
+                <div style={{ maxWidth: '460px' }}>
                   <h3>
-                    Send this claim packet + my 90-day BOL Audit &amp; Broker
-                    Fit Report
+                    Unlock the 4-Tab Dispatch Workbench + Your Free 90-Day Audit
                   </h3>
-                  <p className="small-text">
-                    See every dollar of unpaid detention in your past loads AND
-                    which verified brokers on your exact lanes pay on time.
+                  <p
+                    className="small-text"
+                    style={{ marginBottom: 'var(--space-12)' }}
+                  >
+                    Enter your fleet email to unlock full vector PDF exports
+                    (Forms 101-A, 102-B, 103-C) and live BOL OCR — or preview
+                    the workbench right now.
                   </p>
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    onClick={() =>
+                      navigateToView(
+                        'app',
+                        landerTeaserTab === 'radar' ? 'radar' : 'gps'
+                      )
+                    }
+                  >
+                    Launch Dispatch Workbench (/app) →
+                  </button>
                 </div>
+
                 <EmailCaptureForm
                   defaultSource="post_demo_inline"
                   selectedTier={null}
                   activeSearchQuery={committedSearchQuery}
                   onClearTier={() => setCommittedSearchQuery(null)}
                   inputRef={postDemoInputRef}
-                  onLeadCaptured={setLastCapturedLead}
+                  onLeadCaptured={handleLeadCaptured}
+                  onOpenWorkbench={() => navigateToView('app', 'claim')}
                 />
               </div>
             </div>
@@ -3038,7 +1467,8 @@ export default function App() {
                   setCommittedSearchQuery(null);
                 }}
                 inputRef={finalCtaInputRef}
-                onLeadCaptured={setLastCapturedLead}
+                onLeadCaptured={handleLeadCaptured}
+                onOpenWorkbench={() => navigateToView('app', 'claim')}
               />
             </div>
           </div>

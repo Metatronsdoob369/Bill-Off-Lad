@@ -347,3 +347,65 @@ export function getSpatialFacilityIntelligence(
       'Attach Page-1 Automated Boundary Stamp (< 50m Dock Apron) to bypass manual broker GIS review.',
   };
 }
+
+export interface DockProximityResult {
+  metersFromDock: number;
+  feetFromDock: number;
+  trailerLengths53Ft: number;
+  mgrs1m: string;
+  mgrs100mClusterId: string;
+  utmFormatted: string;
+  boundaryStatus:
+    | 'STATUS: DOCK APRON VERIFIED (< 50m)'
+    | 'STATUS: FACILITY STAGING AREA (< 150m)'
+    | 'STATUS: OFF-SITE / IN-TRANSIT (> 150m)';
+  dispatcherVerdict:
+    | 'AT THE DOCK BUMPER — PAY DETENTION'
+    | 'IN THE BULLPEN / STAGING LOT — PAY DETENTION'
+    | 'OFF-PROPERTY (TRUCK STOP / HWY) — OUTSIDE GATE';
+}
+
+/**
+ * Evaluates dock-bumper proximity in meters, feet, and 53' truck-and-trailer rig lengths (70 ft scale),
+ * returning the 1-meter MGRS grid, 100m MGRS cluster ID, and 150m Automated Boundary Verdict.
+ */
+export function evaluateDockProximity(
+  dockLat: number,
+  dockLon: number,
+  truckLat: number,
+  truckLon: number
+): DockProximityResult {
+  const offset = computePlanarDockOffsetMeters(
+    dockLat,
+    dockLon,
+    truckLat,
+    truckLon
+  );
+  const truckUtm = wgs84ToUtm(truckLat, truckLon);
+  const metersFromDock = offset.planarOffsetMeters;
+  const feetFromDock = Math.round(metersFromDock * 3.28084);
+  const trailerLengths53Ft = Number((feetFromDock / 70).toFixed(1));
+
+  let dispatcherVerdict: DockProximityResult['dispatcherVerdict'] =
+    'OFF-PROPERTY (TRUCK STOP / HWY) — OUTSIDE GATE';
+
+  if (metersFromDock < 50) {
+    dispatcherVerdict = 'AT THE DOCK BUMPER — PAY DETENTION';
+  } else if (metersFromDock <= 150) {
+    dispatcherVerdict = 'IN THE BULLPEN / STAGING LOT — PAY DETENTION';
+  }
+
+  return {
+    metersFromDock,
+    feetFromDock,
+    trailerLengths53Ft,
+    mgrs1m: offset.dockMgrs1m,
+    mgrs100mClusterId: offset.facilityMgrs100mClusterId,
+    utmFormatted: `${truckUtm.zone}${truckUtm.hemisphere} ${truckUtm.easting.toFixed(
+      1
+    )}m E, ${truckUtm.northing.toFixed(1)}m N`,
+    boundaryStatus: offset.enclosure.stampText,
+    dispatcherVerdict,
+  };
+}
+
