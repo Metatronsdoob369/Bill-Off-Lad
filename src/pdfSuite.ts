@@ -296,9 +296,10 @@ function renderClaimEvidencePage(doc: jsPDF, data: CarrierPdfSuiteInput) {
     );
   });
 
+  const count = Math.min(xPositions.length, yPositions.length);
   doc.setDrawColor(36, 31, 24);
   doc.setLineWidth(1.5);
-  for (let i = 0; i < xPositions.length - 1; i++) {
+  for (let i = 0; i < count - 1; i++) {
     doc.line(
       xPositions[i],
       yPositions[i],
@@ -325,23 +326,14 @@ function renderClaimEvidencePage(doc: jsPDF, data: CarrierPdfSuiteInput) {
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(8.5);
   doc.setTextColor(36, 31, 24);
-  doc.text(
-    `• T+0 min: Arrival at facility boundary (${data.eldBreadcrumbSeries[0].offsetMeters}m / ${data.eldBreadcrumbSeries[0].offsetFeet} ft) — ${data.eldBreadcrumbSeries[0].enclosure.stampText}`,
-    48 + dx,
-    y
-  );
-  y += 13;
-  doc.text(
-    `• T+15 min: Backed into dock door (${data.eldBreadcrumbSeries[1].offsetMeters}m / ${data.eldBreadcrumbSeries[1].offsetFeet} ft — sustained for 3.5+ hours) — ${data.eldBreadcrumbSeries[1].enclosure.stampText}`,
-    48 + dx,
-    y
-  );
-  y += 13;
-  doc.text(
-    `• T+225 min: Departed dock apron (${data.eldBreadcrumbSeries[3].offsetMeters}m / ${data.eldBreadcrumbSeries[3].offsetFeet} ft) — ${data.eldBreadcrumbSeries[3].enclosure.stampText}`,
-    48 + dx,
-    y
-  );
+  data.eldBreadcrumbSeries.forEach((pt) => {
+    doc.text(
+      `• ${pt.eventLabel} (${pt.offsetMeters}m / ${pt.offsetFeet} ft) — ${pt.enclosure.stampText}`,
+      48 + dx,
+      y
+    );
+    y += 13;
+  });
 
   // Section 3: Ghost-Clerk Dispatch Transcript
   y += 20;

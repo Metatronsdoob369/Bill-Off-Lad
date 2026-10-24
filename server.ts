@@ -4,6 +4,7 @@ import { fileURLToPath } from 'url';
 import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI, Type } from '@google/genai';
 import dotenv from 'dotenv';
+import { extractDeterministicBolFallback } from './src/bolParser';
 
 dotenv.config();
 
@@ -77,10 +78,13 @@ async function startServer() {
     try {
       const apiKey = process.env.GEMINI_API_KEY;
       if (!apiKey) {
-        res.status(500).json({
-          code: 'MISSING_API_KEY',
-          message: 'GEMINI_API_KEY is not configured on the server.',
+        // Deterministic Fallback: operates standalone without external API key
+        const extraction = extractDeterministicBolFallback(String(rawText || ''));
+        res.json({
+          status: 'ok',
+          engine: 'deterministic_heuristic_fallback',
           requestId: reqId,
+          extraction,
         });
         return;
       }
