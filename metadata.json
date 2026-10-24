@@ -1,0 +1,6 @@
+{
+  "name": "BillOff-Lading — Detention Recovery & Broker Fit Search",
+  "description": "Turn signed BOLs into paid detention claims via Ghost-Clerk Relay and search BOL-verified brokers by actual dock turn times, rate-con notice windows, and detention payout rates.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

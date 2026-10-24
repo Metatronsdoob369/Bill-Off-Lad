@@ -1,0 +1,6 @@
+{
+  "summary":  "Revised implementation plan for BillOff-Lading incorporating the 4 requested patches: gemini-2.5-flash model string, clamped 0..1 normalization for BrokerFitScore, strict 3-link navigation and locked #6E6659/#8F4208/17px/60ch tokens, and Worked Example (#4417) as the default tab with a secondary toggle for the Live BOL Scanner that pre-fills the adjacent email capture bar.",
+  "updatedAt":  "2026-10-24T10:37:14.373158692Z",
+  "requestFeedback":  true,
+  "userFacing":  true
+}

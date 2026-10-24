@@ -1,0 +1,71 @@
+{
+  "entities": {
+    "Lead": {
+      "title": "Lead",
+      "description": "Visiting fleet owner or dispatcher signup lead with acquisition channel and Broker/BOL search query attribution.",
+      "type": "object",
+      "properties": {
+        "email": {
+          "type": "string",
+          "format": "email",
+          "description": "Trimmed, lowercased fleet work email address.",
+          "minLength": 5,
+          "maxLength": 254,
+          "pattern": "^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$"
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of lead submission."
+        },
+        "source": {
+          "type": "string",
+          "description": "UI placement where the lead was captured.",
+          "enum": [
+            "nav_cta",
+            "hero_inline",
+            "broker_search_gate",
+            "post_demo_inline",
+            "pricing_tier_cta",
+            "final_cta_inline"
+          ]
+        },
+        "tier": {
+          "type": "string",
+          "description": "Selected pricing tier or null.",
+          "enum": [
+            "Dock & Broker Audit — Free",
+            "Recovery + Search — $99/truck/mo",
+            "Back-Claims — 20% of recovery"
+          ]
+        },
+        "channel": {
+          "type": "string",
+          "description": "Acquisition channel from ref, utm_source, or referrer.",
+          "maxLength": 120
+        },
+        "search_query": {
+          "type": "string",
+          "description": "Lane, Broker MC#, or custom BOL scan summary queued before signup.",
+          "maxLength": 100
+        }
+      },
+      "required": [
+        "email",
+        "timestamp",
+        "source",
+        "tier",
+        "channel",
+        "search_query"
+      ]
+    }
+  },
+  "firestore": {
+    "/leads/{leadId}": {
+      "schema": {
+        "$ref": "#/entities/Lead"
+      },
+      "description": "Write-only founding fleet lead capture collection."
+    }
+  }
+}

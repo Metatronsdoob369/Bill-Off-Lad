@@ -1,0 +1,62 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global default-deny safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function isValidLead(data) {
+      return data.keys().hasAll(['email', 'timestamp', 'source', 'tier', 'channel', 'search_query']) &&
+        data.keys().hasOnly(['email', 'timestamp', 'source', 'tier', 'channel', 'search_query']) &&
+        data.email is string &&
+        data.email.size() >= 5 &&
+        data.email.size() <= 254 &&
+        data.email.matches('^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$') &&
+        data.timestamp == request.time &&
+        data.source is string &&
+        data.source.size() <= 40 &&
+        data.source in [
+          'nav_cta',
+          'hero_inline',
+          'broker_search_gate',
+          'post_demo_inline',
+          'pricing_tier_cta',
+          'final_cta_inline'
+        ] &&
+        (data.tier == null || (
+          data.tier is string &&
+          data.tier.size() <= 60 &&
+          data.tier in [
+            'Dock & Broker Audit — Free',
+            'Recovery + Search — $99/truck/mo',
+            'Back-Claims — 20% of recovery'
+          ]
+        )) &&
+        (data.channel == null || (
+          data.channel is string &&
+          data.channel.size() <= 120
+        )) &&
+        (data.search_query == null || (
+          data.search_query is string &&
+          data.search_query.size() <= 100
+        ));
+    }
+
+    match /leads/{leadId} {
+      // Anyone may CREATE a lead with strict validation on all 6 keys and document ID
+      allow create: if isValidId(leadId) && isValidLead(incoming());
+
+      // Nobody may read, update, or delete leads from the public site
+      allow read, update, delete: if false;
+    }
+  }
+}
