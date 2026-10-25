@@ -182,7 +182,11 @@ ${rawText || 'See attached BOL / Rate Confirmation image.'}`,
 
   // Vite middleware for development or static serving in production
   if (process.env.NODE_ENV !== 'production') {
+    // Pin Vite to this project folder so it never scans or watches whatever
+    // folder the terminal happened to be in (e.g. the whole home directory).
     const vite = await createViteServer({
+      root: __dirname,
+      configFile: path.resolve(__dirname, 'vite.config.ts'),
       server: { middlewareMode: true },
       appType: 'spa',
     });
