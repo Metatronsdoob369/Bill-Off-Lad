@@ -24,6 +24,7 @@ export default defineConfig(() => {
           ? null
           : {
               ignored: [
+                '**/.*',
                 '**/Library/**',
                 '**/node_modules/**',
                 '**/.git/**',
@@ -35,6 +36,7 @@ export default defineConfig(() => {
                 '**/Pictures/**',
                 '**/Movies/**',
                 '**/Music/**',
+                '**/Public/**',
               ],
             },
     },
