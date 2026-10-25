@@ -6,9 +6,12 @@ import { defineConfig } from 'vite';
 export default defineConfig(() => {
   return {
     plugins: [react(), tailwindcss()],
+    optimizeDeps: {
+      entries: ['index.html'],
+    },
     resolve: {
       alias: {
-        '@': path.resolve(__dirname, '.'),
+        '@': path.resolve(import.meta.dirname, '.'),
       },
     },
     server: {
@@ -16,16 +19,24 @@ export default defineConfig(() => {
       // HMR is disabled in AI Studio via DISABLE_HMR env var.
       hmr: process.env.DISABLE_HMR !== 'true',
       // Exclude system directories like Address Book and node_modules from triggering HMR loops
-      watch: process.env.DISABLE_HMR === 'true'
-        ? null
-        : {
-            ignored: [
-              '**/Library/**',
-              '**/node_modules/**',
-              '**/.git/**',
-              '**/data/**',
-            ],
-          },
+      watch:
+        process.env.DISABLE_HMR === 'true'
+          ? null
+          : {
+              ignored: [
+                '**/Library/**',
+                '**/node_modules/**',
+                '**/.git/**',
+                '**/data/**',
+                '**/Downloads/**',
+                '**/Documents/**',
+                '**/Desktop/**',
+                '**/Applications/**',
+                '**/Pictures/**',
+                '**/Movies/**',
+                '**/Music/**',
+              ],
+            },
     },
   };
 });
