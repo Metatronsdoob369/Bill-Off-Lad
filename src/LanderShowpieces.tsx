@@ -62,33 +62,49 @@ export function ClockHero({
   const [minute, setMinute] = useState(ARRIVE);
   const [paid, setPaid] = useState(false);
   const [runId, setRunId] = useState(0);
+  const [paused, setPaused] = useState(false);
+  const minuteRef = useRef(ARRIVE);
+  const startedRun = useRef(-1);
 
+  // The clock runs for everyone (it is counting numbers, not sweeping motion),
+  // with a Pause button so the loop can always be stopped (WCAG 2.2.2).
   useEffect(() => {
-    if (prefersReducedMotion()) {
-      setMinute(DEPART);
-      setPaid(true);
-      return;
+    if (paused) return;
+    if (startedRun.current !== runId) {
+      startedRun.current = runId;
+      minuteRef.current = ARRIVE;
+      setMinute(ARRIVE);
+      setPaid(false);
     }
-    setMinute(ARRIVE);
-    setPaid(false);
-    let m = ARRIVE;
+    let iv: ReturnType<typeof setInterval> | undefined;
     let payTimer: ReturnType<typeof setTimeout> | undefined;
     let loopTimer: ReturnType<typeof setTimeout> | undefined;
-    const iv = setInterval(() => {
-      m = Math.min(DEPART, m + (m < FREE_ENDS ? 4 : 1));
-      setMinute(m);
-      if (m >= DEPART) {
-        clearInterval(iv);
-        payTimer = setTimeout(() => setPaid(true), 1100);
-        loopTimer = setTimeout(() => setRunId((n) => n + 1), 6100);
-      }
-    }, 40);
+    const finish = () => {
+      payTimer = setTimeout(() => setPaid(true), 1100);
+      loopTimer = setTimeout(() => setRunId((n) => n + 1), 1100 + 5000);
+    };
+    if (minuteRef.current >= DEPART) {
+      finish();
+    } else {
+      // Free time burns off fast (~1.5s); billable time ticks ~$1 per frame
+      // (~11s) so visitors can watch the money climb. Then hold on PAID, loop.
+      iv = setInterval(() => {
+        const m = minuteRef.current;
+        const next = Math.min(DEPART, m + (m < FREE_ENDS ? 4 : 1));
+        minuteRef.current = next;
+        setMinute(next);
+        if (next >= DEPART) {
+          if (iv) clearInterval(iv);
+          finish();
+        }
+      }, 40);
+    }
     return () => {
-      clearInterval(iv);
+      if (iv) clearInterval(iv);
       if (payTimer) clearTimeout(payTimer);
       if (loopTimer) clearTimeout(loopTimer);
     };
-  }, [runId]);
+  }, [runId, paused]);
 
   const pct = ((minute - ARRIVE) / (DEPART - ARRIVE)) * 100;
   const billableMins = Math.max(0, minute - FREE_ENDS);
@@ -119,7 +135,10 @@ export function ClockHero({
           className="sp-meter"
           role="img"
           aria-label="Replay of Load 4417: arrived 08:02, free time ended 10:02, departed 14:37. 4 hours 35 minutes billable at $60 per hour, $275 claim paid on day 9."
-          onClick={() => setRunId((n) => n + 1)}
+          onClick={() => {
+            setPaused(false);
+            setRunId((n) => n + 1);
+          }}
           title="Click to replay"
         >
           <div className="sp-meter-head">
@@ -165,6 +184,19 @@ export function ClockHero({
                 {e.label}
               </div>
             ))}
+          </div>
+          <div className="sp-meter-controls">
+            <button
+              type="button"
+              className="sp-pause"
+              aria-pressed={paused}
+              onClick={(e) => {
+                e.stopPropagation();
+                setPaused((p) => !p);
+              }}
+            >
+              {paused ? '▶ Play' : '❚❚ Pause'}
+            </button>
           </div>
         </div>
 

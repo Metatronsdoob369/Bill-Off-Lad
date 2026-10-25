@@ -995,6 +995,13 @@ p {
 .sp-event b { display: block; font: 700 14px var(--font-mono); color: var(--text-primary); }
 .sp-event-on { border-color: var(--accent); color: var(--text-primary); }
 .sp-event-pay.sp-event-on { border-color: var(--pop); }
+.sp-meter-controls { display: flex; justify-content: flex-end; margin-top: var(--space-16); }
+.sp-pause {
+  font: 600 12px var(--font-mono); letter-spacing: 0.06em; color: var(--text-muted);
+  background: var(--background); border: var(--border-width) solid var(--border);
+  border-radius: var(--radius); padding: 6px 12px; cursor: pointer; min-height: 32px;
+}
+.sp-pause:hover { color: var(--text-primary); border-color: var(--accent); }
 .sp-hero-capture {
   display: flex; flex-direction: column; align-items: center;
   gap: var(--space-16); margin-top: var(--space-32); text-align: center;
