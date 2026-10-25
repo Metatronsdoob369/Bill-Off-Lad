@@ -1014,6 +1014,8 @@ p {
   display: grid; grid-template-columns: 2.2fr 1.4fr 1fr 0.9fr 1.1fr;
   gap: var(--space-12); padding: 14px 0; border-bottom: 1px solid #3a3329; align-items: center;
 }
+.sp-board-row { transition: background-color 600ms var(--ease-out); }
+.sp-board-row-flash { background-color: rgba(180, 84, 10, 0.14); transition-duration: 120ms; }
 .sp-board-row-head { font-size: 11px; letter-spacing: 0.12em; color: #8C8272; padding: 10px 0; }
 .sp-flap { display: inline-flex; flex-wrap: wrap; gap: 4px 0.6em; }
 .sp-flap-word { display: inline-flex; gap: 2px; white-space: nowrap; }

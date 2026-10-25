@@ -42,8 +42,8 @@ function useInView<T extends Element>(threshold = 0.35) {
 /* B · CLOCK HERO                                                      */
 /* ------------------------------------------------------------------ */
 
-const ARRIVE = 8 * 60 + 4; // 08:04
-const FREE_ENDS = 10 * 60 + 4; // 10:04 (2 hrs free)
+const ARRIVE = 8 * 60 + 2; // 08:02
+const FREE_ENDS = 10 * 60 + 2; // 10:02 (2 hrs free)
 const NOTICE = 10 * 60 + 12; // 10:12
 const DEPART = 14 * 60 + 37; // 14:37
 const RATE = 60; // $/hr
@@ -96,8 +96,8 @@ export function ClockHero({
   const done = minute >= DEPART;
 
   const events = [
-    { t: '08:04', label: 'ELD geofence: at dock', on: true, pay: false },
-    { t: '10:04', label: 'Free time over, meter starts', on: minute >= FREE_ENDS, pay: false },
+    { t: '08:02', label: 'ELD geofence: at dock', on: true, pay: false },
+    { t: '10:02', label: 'Free time over, meter starts', on: minute >= FREE_ENDS, pay: false },
     { t: '10:12', label: 'Notice sent, inside 24h window', on: minute >= NOTICE, pay: false },
     { t: 'Day 9', label: 'Claim paid in full', on: paid, pay: true },
   ];
@@ -118,7 +118,7 @@ export function ClockHero({
         <div
           className="sp-meter"
           role="img"
-          aria-label="Replay of Load 4417: arrived 08:04, free time ended 10:04, departed 14:37. 4 hours 33 minutes billable at $60 per hour, $275 claim paid on day 9."
+          aria-label="Replay of Load 4417: arrived 08:02, free time ended 10:02, departed 14:37. 4 hours 35 minutes billable at $60 per hour, $275 claim paid on day 9."
           onClick={() => setRunId((n) => n + 1)}
           title="Click to replay"
         >
@@ -150,8 +150,8 @@ export function ClockHero({
             </div>
           </div>
           <div className="sp-ticks" aria-hidden="true">
-            <span>08:04 arrive</span>
-            <span>10:04 free time ends</span>
+            <span>08:02 arrive</span>
+            <span>10:02 free time ends</span>
             <span>14:37 out</span>
           </div>
 
@@ -182,11 +182,37 @@ export function ClockHero({
 /* ------------------------------------------------------------------ */
 
 const BOARD_ROWS = [
-  { lane: 'JOLIET IL > ATLANTA GA', mc: 'MC 481920', dwell: '1H 18M', paid: '91%', call: 'go', score: 94 },
-  { lane: 'CHICAGO IL > DALLAS TX', mc: 'MC 774102', dwell: '5H 42M', paid: '18%', call: 'trap', score: 29 },
-  { lane: 'BHAM AL > MEMPHIS TN', mc: 'MC 309441', dwell: '1H 04M', paid: '89%', call: 'go', score: 91 },
-  { lane: 'HBURG PA > COLUMBUS OH', mc: 'MC 552018', dwell: '3H 50M', paid: '41%', call: 'trap', score: 47 },
+  { lane: 'JOLIET IL > ATLANTA GA', mc: 'MC 481920', call: 'go' },
+  { lane: 'CHICAGO IL > DALLAS TX', mc: 'MC 774102', call: 'trap' },
+  { lane: 'BHAM AL > MEMPHIS TN', mc: 'MC 309441', call: 'go' },
+  { lane: 'HBURG PA > COLUMBUS OH', mc: 'MC 552018', call: 'trap' },
 ] as const;
+
+/** Sample readings each row cycles through, so the board looks like live data
+ *  arriving. Each row keeps its GO / TRAP call; only the numbers drift. */
+const BOARD_READINGS: { dwell: string; paid: string; score: number }[][] = [
+  [
+    { dwell: '1H 18M', paid: '91%', score: 94 },
+    { dwell: '1H 22M', paid: '90%', score: 93 },
+    { dwell: '1H 11M', paid: '92%', score: 95 },
+  ],
+  [
+    { dwell: '5H 42M', paid: '18%', score: 29 },
+    { dwell: '5H 51M', paid: '17%', score: 27 },
+    { dwell: '5H 36M', paid: '19%', score: 31 },
+  ],
+  [
+    { dwell: '1H 04M', paid: '89%', score: 91 },
+    { dwell: '1H 09M', paid: '88%', score: 90 },
+    { dwell: '0H 58M', paid: '90%', score: 92 },
+  ],
+  [
+    { dwell: '3H 50M', paid: '41%', score: 47 },
+    { dwell: '3H 44M', paid: '43%', score: 49 },
+    { dwell: '3H 58M', paid: '39%', score: 45 },
+  ],
+];
+const BOARD_REFRESH_MS = 4000;
 
 const FLAP_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
 
@@ -236,6 +262,30 @@ function FlapText({ text, start, delay }: { text: string; start: boolean; delay:
 
 export function BrokerBoard({ onOpenRadar }: { onOpenRadar: () => void }) {
   const { ref, inView } = useInView<HTMLDivElement>(0.3);
+  const [readingIdx, setReadingIdx] = useState<number[]>(() => BOARD_ROWS.map(() => 0));
+  const [flashRow, setFlashRow] = useState<number | null>(null);
+
+  // Live feel: after the first flip-in, refresh one row every few seconds.
+  useEffect(() => {
+    if (!inView || prefersReducedMotion()) return;
+    let row = 0;
+    let clearFlash: ReturnType<typeof setTimeout> | undefined;
+    const iv = setInterval(() => {
+      const r = row;
+      row = (row + 1) % BOARD_ROWS.length;
+      setReadingIdx((prev) =>
+        prev.map((v, i) => (i === r ? (v + 1) % BOARD_READINGS[i].length : v))
+      );
+      setFlashRow(r);
+      if (clearFlash) clearTimeout(clearFlash);
+      clearFlash = setTimeout(() => setFlashRow(null), 1400);
+    }, BOARD_REFRESH_MS);
+    return () => {
+      clearInterval(iv);
+      if (clearFlash) clearTimeout(clearFlash);
+    };
+  }, [inView]);
+
   return (
     <section className="section-band-bg sp-board-section">
       <div className="container">
@@ -257,8 +307,14 @@ export function BrokerBoard({ onOpenRadar }: { onOpenRadar: () => void }) {
               <span role="columnheader">PAID %</span>
               <span role="columnheader">CALL</span>
             </div>
-            {BOARD_ROWS.map((r, ri) => (
-              <div className="sp-board-row" role="row" key={r.mc}>
+            {BOARD_ROWS.map((base, ri) => {
+              const r = { ...base, ...BOARD_READINGS[ri][readingIdx[ri]] };
+              return (
+              <div
+                className={`sp-board-row ${flashRow === ri ? 'sp-board-row-flash' : ''}`}
+                role="row"
+                key={r.mc}
+              >
                 <span role="cell"><FlapText text={r.lane} start={inView} delay={ri * 260} /></span>
                 <span role="cell"><FlapText text={r.mc} start={inView} delay={ri * 260} /></span>
                 <span role="cell"><FlapText text={r.dwell} start={inView} delay={ri * 260} /></span>
@@ -274,7 +330,8 @@ export function BrokerBoard({ onOpenRadar }: { onOpenRadar: () => void }) {
                   </span>
                 </span>
               </div>
-            ))}
+              );
+            })}
           </div>
 
           <div className="sp-board-foot">
@@ -321,10 +378,10 @@ export function StampedBol() {
           </h3>
           <div className="sp-bol-row"><span>Receiver</span><span>Joliet, IL · Door 14</span></div>
           <div className="sp-bol-row"><span>Rate con</span><span>RC-88214 · $60/hr after 2h</span></div>
-          <div className="sp-bol-row"><span>Arrived</span><span>08:04 CT (ELD)</span></div>
+          <div className="sp-bol-row"><span>Arrived</span><span>08:02 CT (ELD)</span></div>
           <div className="sp-bol-row"><span>Notice sent</span><span>10:12 CT · in window</span></div>
           <div className="sp-bol-row"><span>Signed out</span><span>14:37 CT (ELD)</span></div>
-          <div className="sp-bol-row"><span>Dwell</span><span><mark>6h 33m · 4h 35m billable</mark></span></div>
+          <div className="sp-bol-row"><span>Dwell</span><span><mark>6h 35m · 4h 35m billable</mark></span></div>
           <div className="sp-bol-row"><span>Receiver sig</span><span className="sp-bol-sig">M. Okafor</span></div>
           <div className="sp-stamp sp-stamp-due" aria-label="Stamped: detention due, $275.00, filed same day">
             Detention due<small>$275.00 · filed same day</small>
