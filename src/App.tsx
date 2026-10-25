@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import './styles.css';
+import { ClockHero, BrokerBoard, StampedBol } from './LanderShowpieces';
 import {
   submitFleetLead,
   LeadSource,
@@ -443,166 +444,26 @@ export default function App() {
       </header>
 
       <main>
-        {/* 1. HERO */}
-        <section className="section-band-bg">
-          <div className="container hero-grid">
-            <div className="hero-copy-stack">
-              <h1>Stop writing off the detention sitting on your BOLs</h1>
-              <p className="hero-subheadline">
-                Built for 1–100 truck fleets: BillOff-Lading turns signed Bills
-                of Lading into paid detention claims — and lets you search
-                brokers by real dock turn times and payout rates before you
-                haul.
-              </p>
-
-              <div>
-                <EmailCaptureForm
-                  defaultSource={activeHeroSource}
-                  selectedTier={null}
-                  inputRef={heroInputRef}
-                  onLeadCaptured={handleLeadCaptured}
-                  onOpenWorkbench={() => navigateToView('app', 'claim')}
-                />
-              </div>
-
-              <p className="hero-credibility">
-                Fleets charge detention on 94.5% of eligible loads — but fewer
-                than half of those invoices ever get paid. That&apos;s{' '}
-                <span className="claim-dollar-figure">$3.6 billion</span> a year
-                left at the dock.
-              </p>
-            </div>
-
-            <div className="hero-visual-frame">
-              <svg
-                viewBox="0 0 640 480"
-                fill="none"
-                xmlns="http://www.w3.org/2000/svg"
-                aria-label="Charcoal semi-truck backed into a loading dock at dawn with amber marker lights glowing"
-              >
-                <rect width="640" height="480" fill="var(--text-primary)" />
-                <polygon
-                  points="0,350 640,350 640,480 0,480"
-                  fill="var(--border)"
-                />
-                <polygon
-                  points="80,350 560,350 620,480 20,480"
-                  fill="var(--background)"
-                />
-                <rect
-                  x="140"
-                  y="40"
-                  width="360"
-                  height="310"
-                  stroke="var(--border)"
-                  strokeWidth="2"
-                />
-                <rect
-                  x="180"
-                  y="70"
-                  width="280"
-                  height="110"
-                  fill="var(--text-muted)"
-                />
-                <line
-                  x1="180"
-                  y1="105"
-                  x2="460"
-                  y2="105"
-                  stroke="var(--border)"
-                  strokeWidth="2"
-                />
-                <line
-                  x1="180"
-                  y1="140"
-                  x2="460"
-                  y2="140"
-                  stroke="var(--border)"
-                  strokeWidth="2"
-                />
-                <rect
-                  x="180"
-                  y="180"
-                  width="280"
-                  height="170"
-                  fill="var(--accent)"
-                  fillOpacity="0.22"
-                />
-                <rect
-                  x="210"
-                  y="95"
-                  width="220"
-                  height="240"
-                  fill="var(--text-primary)"
-                  stroke="var(--border)"
-                  strokeWidth="2"
-                />
-                <line
-                  x1="320"
-                  y1="95"
-                  x2="320"
-                  y2="335"
-                  stroke="var(--border)"
-                  strokeWidth="2"
-                />
-                <circle cx="226" cy="108" r="5" fill="var(--accent)" />
-                <circle cx="250" cy="108" r="5" fill="var(--accent)" />
-                <circle cx="320" cy="108" r="5" fill="var(--accent)" />
-                <circle cx="390" cy="108" r="5" fill="var(--accent)" />
-                <circle cx="414" cy="108" r="5" fill="var(--accent)" />
-                <rect
-                  x="220"
-                  y="322"
-                  width="28"
-                  height="8"
-                  fill="var(--accent)"
-                />
-                <rect
-                  x="392"
-                  y="322"
-                  width="28"
-                  height="8"
-                  fill="var(--accent)"
-                />
-                <rect
-                  x="215"
-                  y="335"
-                  width="36"
-                  height="55"
-                  fill="var(--text-primary)"
-                />
-                <rect
-                  x="255"
-                  y="335"
-                  width="36"
-                  height="55"
-                  fill="var(--text-primary)"
-                />
-                <rect
-                  x="349"
-                  y="335"
-                  width="36"
-                  height="55"
-                  fill="var(--text-primary)"
-                />
-                <rect
-                  x="389"
-                  y="335"
-                  width="36"
-                  height="55"
-                  fill="var(--text-primary)"
-                />
-                <rect
-                  x="235"
-                  y="352"
-                  width="170"
-                  height="10"
-                  fill="var(--border)"
-                />
-              </svg>
-            </div>
-          </div>
-        </section>
+        {/* 1. HERO — B · The Clock Is Running */}
+        <ClockHero
+          captureSlot={
+            <EmailCaptureForm
+              defaultSource={activeHeroSource}
+              selectedTier={null}
+              inputRef={heroInputRef}
+              onLeadCaptured={handleLeadCaptured}
+              onOpenWorkbench={() => navigateToView('app', 'claim')}
+            />
+          }
+          credibility={
+            <>
+              Fleets charge detention on 94.5% of eligible loads — but fewer
+              than half of those invoices ever get paid. That&apos;s{' '}
+              <span className="claim-dollar-figure">$3.6 billion</span> a year
+              left at the dock.
+            </>
+          }
+        />
 
         {/* 2. PROBLEM */}
         <section className="section-band-surface">
@@ -692,6 +553,12 @@ export default function App() {
             </div>
           </div>
         </section>
+
+        {/* C · BROKER BOARD */}
+        <BrokerBoard onOpenRadar={() => navigateToView('app', 'radar')} />
+
+        {/* A · STAMPED BOL */}
+        <StampedBol />
 
         {/* WORKED EXAMPLE (LOAD #4417 = $275.00) + COMPACT 2-TAB PROOF TEASER SWITCHER */}
         <section className="section-band-surface">
