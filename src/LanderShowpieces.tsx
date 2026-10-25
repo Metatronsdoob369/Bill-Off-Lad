@@ -73,17 +73,20 @@ export function ClockHero({
     setPaid(false);
     let m = ARRIVE;
     let payTimer: ReturnType<typeof setTimeout> | undefined;
+    let loopTimer: ReturnType<typeof setTimeout> | undefined;
     const iv = setInterval(() => {
-      m = Math.min(DEPART, m + 3);
+      m = Math.min(DEPART, m + (m < FREE_ENDS ? 4 : 1));
       setMinute(m);
       if (m >= DEPART) {
         clearInterval(iv);
-        payTimer = setTimeout(() => setPaid(true), 900);
+        payTimer = setTimeout(() => setPaid(true), 1100);
+        loopTimer = setTimeout(() => setRunId((n) => n + 1), 6100);
       }
-    }, 45);
+    }, 40);
     return () => {
       clearInterval(iv);
       if (payTimer) clearTimeout(payTimer);
+      if (loopTimer) clearTimeout(loopTimer);
     };
   }, [runId]);
 
